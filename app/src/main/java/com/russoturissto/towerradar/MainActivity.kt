@@ -149,7 +149,6 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var searchHere: Button
     private lateinit var sourceSpinner: Spinner
     private lateinit var mapAttribution: TextView
-    private lateinit var brandLink: TextView
     private lateinit var keyButton: Button
     private lateinit var headingView: TextView
     private lateinit var mapStatus: TextView
@@ -230,17 +229,22 @@ class MainActivity : Activity(), SensorEventListener {
             if (provider.id.startsWith("google-"))
                 "Google Maps · данные об авторских правах загружаются"
             else provider.attribution
-        if (::brandLink.isInitialized) {
-            brandLink.visibility = if (provider.id == "yandex" ||
-                provider.id.startsWith("google-")) View.VISIBLE else View.GONE
-            brandLink.text = if (provider.id.startsWith("google-"))
-                "Google Maps" else "Яндекс Карты"
-            brandLink.contentDescription = brandLink.text
-            brandLink.setOnClickListener {
-                val address = if (provider.id.startsWith("google-"))
-                    "https://www.google.com/maps" else "https://yandex.ru/maps/"
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(address)))
-            }
+        // Keep required provider credits in the existing bottom-left attribution.
+        // Do not place another floating link over the map controls.
+        if (::mapAttribution.isInitialized) {
+            val brandUrl = AttributionUiPolicy.creditLink(provider.id)
+            mapAttribution.isClickable = brandUrl != null
+            mapAttribution.isFocusable = brandUrl != null
+            mapAttribution.contentDescription =
+                provider.attribution + if (brandUrl == null) "" else " · сведения о карте"
+            mapAttribution.setOnClickListener(if (brandUrl == null) null else
+                View.OnClickListener {
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(brandUrl)))
+                    } catch (_: Exception) {
+                        Toast.makeText(this, "Не удалось открыть браузер", Toast.LENGTH_SHORT).show()
+                    }
+                })
         }
         current.setStyle(MapSources.style(provider, key, session?.token.orEmpty())) { style ->
             if (palette.dark && provider.keyPref == null) {
@@ -1867,19 +1871,6 @@ class MainActivity : Activity(), SensorEventListener {
             Gravity.START or Gravity.BOTTOM).apply {
             setMargins(dp(8), 0, 0, dp(91))
         })
-        brandLink = text("Яндекс Карты", 12f, palette.olive).apply {
-            setPadding(dp(8), dp(5), dp(8), dp(5))
-            background = rounded(palette.surface, 4)
-            visibility = View.GONE
-            setOnClickListener {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://yandex.ru/maps/")))
-            }
-        }
-        rootView.addView(brandLink, FrameLayout.LayoutParams(-2, -2,
-            Gravity.END or Gravity.BOTTOM).apply {
-            setMargins(0, 0, dp(8), dp(91))
-        })
-
         // Crosshair mode is a separate, focused location picker: drag the map
         // under the reticle, tap a desired point or zoom for precise placement.
         crosshairReticle = CrosshairView(this).apply {
@@ -1985,8 +1976,6 @@ class MainActivity : Activity(), SensorEventListener {
         crosshairControls.visibility = View.VISIBLE
         updateCrosshairCoordinates()
         mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams)
-            .apply { bottomMargin = systemBottomInset + dp(171) }
-        brandLink.layoutParams = (brandLink.layoutParams as FrameLayout.LayoutParams)
             .apply { bottomMargin = systemBottomInset + dp(171) }
         Toast.makeText(this, "Перемещайте карту или коснитесь нужной точки",
             Toast.LENGTH_SHORT).show()
@@ -2099,11 +2088,6 @@ class MainActivity : Activity(), SensorEventListener {
         if (::mapAttribution.isInitialized) {
             mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
                 bottomMargin = footerMargin
-            }
-        }
-        if (::brandLink.isInitialized) {
-            brandLink.layoutParams = (brandLink.layoutParams as FrameLayout.LayoutParams).apply {
-                bottomMargin = footerMargin + dp(36)
             }
         }
         if (::details.isInitialized) {
