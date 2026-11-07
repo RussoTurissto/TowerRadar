@@ -128,6 +128,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var initiallyCentered = false
     private var listening = false
     private var busy = false
+    private var pendingManualSearch = false
     private var selectedOperator: String? = null
     private var radiusKm = 5
     private var lastFetch: LatLng? = null
@@ -578,6 +579,7 @@ class MainActivity : Activity(), SensorEventListener {
                 requestedCellId = null
                 servingSite = null
                 servingCell?.let(::updateServingCell)
+                updateOverlays()
                 load(force = true)
             }
             .setNegativeButton("Отмена", null)
@@ -1052,7 +1054,10 @@ class MainActivity : Activity(), SensorEventListener {
             status.text = "Сначала выберите точку поиска на карте."
             return
         }
-        if (busy) return
+        if (busy) {
+            if (force) pendingManualSearch = true
+            return
+        }
         val previous = lastFetch
         if (!force && previous != null && radiusKm == lastFetchRadius && sites.isNotEmpty() &&
             TowerData.distanceKm(point.latitude, point.longitude, previous.latitude, previous.longitude) < (radiusKm / 2.0).coerceAtLeast(0.5)) return
@@ -1095,6 +1100,10 @@ class MainActivity : Activity(), SensorEventListener {
                         if (cellError) "OpenCellID недоступен" else if (cells.isNotEmpty())
                             "OSM + OpenCellID (" + cells.size + " сот)"
                         else if (cached != null) "кеш OSM" else "OpenStreetMap"
+                    if (pendingManualSearch) {
+                        pendingManualSearch = false
+                        load(force = true)
+                    }
                 }
             } catch (e: Exception) {
                 val cached = cache(lat, lon, range)
@@ -1112,6 +1121,10 @@ class MainActivity : Activity(), SensorEventListener {
                         status.text = "Нет соединения · показан сохранённый результат"
                     } else {
                         status.text = e.message?.take(140) ?: "Не удалось загрузить данные."
+                    }
+                    if (pendingManualSearch) {
+                        pendingManualSearch = false
+                        load(force = true)
                     }
                 }
             }
