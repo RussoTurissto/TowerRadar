@@ -70,7 +70,11 @@ object MapSources {
             else -> 19f
         })
         return Style.Builder()
-            .withSource(RasterSource("basemap-source", tileSet, 256))
+            .withSource(RasterSource("basemap-source", tileSet, 256).apply {
+                // Google and 2GIS remain transient: do not persist downloaded
+                // tiles without the corresponding provider's explicit permission.
+                isVolatile = !MapTileCache.diskCacheAllowed(provider)
+            })
             .withLayer(RasterLayer("basemap-layer", "basemap-source"))
     }
 
