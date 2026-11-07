@@ -202,7 +202,7 @@ class MainActivity : Activity(), SensorEventListener {
         val image = Bitmap.createBitmap(72, 72, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(image)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = palette.olive
+            color = Color.rgb(0, 170, 199)
             style = Paint.Style.FILL
         }
         val triangle = Path().apply {
@@ -241,6 +241,8 @@ class MainActivity : Activity(), SensorEventListener {
             style.addSource(GeoJsonSource("my-location", emptyFeatures()))
             style.addSource(GeoJsonSource("gps-accuracy", emptyFeatures()))
             style.addSource(GeoJsonSource("heading-cone", emptyFeatures()))
+            style.addSource(GeoJsonSource("heading-border", emptyFeatures()))
+            style.addSource(GeoJsonSource("heading-ray", emptyFeatures()))
             style.addSource(GeoJsonSource("cell-link", emptyFeatures()))
             style.addSource(GeoJsonSource("serving-cell", emptyFeatures()))
 
@@ -248,7 +250,27 @@ class MainActivity : Activity(), SensorEventListener {
                 setProperties(PropertyFactory.fillColor(palette.olive), PropertyFactory.fillOpacity(0.10f))
             })
             style.addLayer(FillLayer("heading-cone-fill", "heading-cone").apply {
-                setProperties(PropertyFactory.fillColor(palette.olive), PropertyFactory.fillOpacity(0.24f))
+                setProperties(
+                    PropertyFactory.fillColor(Color.rgb(0, 179, 205)),
+                    PropertyFactory.fillOpacity(sectorAlpha())
+                )
+            })
+            style.addLayer(LineLayer("heading-border-halo", "heading-border").apply {
+                setProperties(PropertyFactory.lineColor(Color.WHITE),
+                    PropertyFactory.lineOpacity(0.92f),
+                    PropertyFactory.lineWidth(6f))
+            })
+            style.addLayer(LineLayer("heading-border-color", "heading-border").apply {
+                setProperties(PropertyFactory.lineColor(Color.rgb(0, 99, 148)),
+                    PropertyFactory.lineWidth(2.8f))
+            })
+            style.addLayer(LineLayer("heading-center-halo", "heading-ray").apply {
+                setProperties(PropertyFactory.lineColor(Color.WHITE),
+                    PropertyFactory.lineWidth(7.0f))
+            })
+            style.addLayer(LineLayer("heading-center-color", "heading-ray").apply {
+                setProperties(PropertyFactory.lineColor(Color.rgb(0, 130, 204)),
+                    PropertyFactory.lineWidth(3.8f))
             })
             style.addLayer(LineLayer("serving-line", "cell-link").apply {
                 setProperties(PropertyFactory.lineColor(Color.rgb(215, 141, 45)),
@@ -477,7 +499,8 @@ class MainActivity : Activity(), SensorEventListener {
             "Ключи Яндекс / 2ГИС",
             "Открыть кабинет Яндекс ID",
             "Дополнительные соты OpenCellID",
-            "Сектор направления: " + if (showCone) "Включён" else "Выключен"
+            "Сектор направления: " + if (showCone) "Включён" else "Выключен",
+            "Контраст сектора: " + arrayOf("Обычный", "Яркий", "Максимальный")[sectorIntensity]
         )
         KhakiDialogBuilder(this, palette).setTitle("Настройки · TowerRadar")
             .setItems(items) { _, selected ->
@@ -498,8 +521,31 @@ class MainActivity : Activity(), SensorEventListener {
                             .putBoolean("show_cone", showCone).apply()
                         updateOverlays()
                     }
+                    7 -> chooseSectorContrast()
                 }
             }.setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun chooseSectorContrast() {
+        KhakiDialogBuilder(this, palette).setTitle("Контраст направления")
+            .setMessage("Голубой сектор показывает, куда направлен верх телефона. " +
+                "Оранжевый пунктир обозначает позицию обслуживающей соты.")
+            .setSingleChoiceItems(arrayOf("Обычный", "Яркий · рекомендуется",
+                "Максимальный"), sectorIntensity) { _, selected ->
+                sectorIntensity = selected.coerceIn(0, 2)
+                getPreferences(Context.MODE_PRIVATE).edit()
+                    .putInt("sector_intensity", sectorIntensity).apply()
+                (map?.style?.getLayer("heading-cone-fill") as? FillLayer)?.setProperties(
+                    PropertyFactory.fillOpacity(sectorAlpha())
+                )
+                updateOverlays()
+            }.setNegativeButton("Отмена", null).show()
+    }
+
+    private fun sectorAlpha(): Float = when (sectorIntensity) {
+        0 -> 0.27f
+        2 -> 0.64f
+        else -> 0.44f
     }
 
     private fun selectTheme() {
@@ -540,12 +586,13 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun showPositionOptions() {
         KhakiDialogBuilder(this, palette).setTitle("Моя геопозиция")
-            .setItems(arrayOf("Установить в центре карты", "Ввести координаты",
-                "Вернуться к автоматической GPS")) { _, selection ->
+            .setItems(arrayOf("Установить точку перекрестием", "Установить в центре карты",
+                "Ввести координаты", "Вернуться к автоматической GPS")) { _, selection ->
                 when (selection) {
-                    0 -> map?.cameraPosition?.target?.let(::setManualPosition)
-                    1 -> enterManualCoordinates()
-                    2 -> useAutomaticPosition()
+                    0 -> startCrosshairMode()
+                    1 -> map?.cameraPosition?.target?.let(::setManualPosition)
+                    2 -> enterManualCoordinates()
+                    3 -> useAutomaticPosition()
                 }
             }.setNegativeButton("Отмена", null).show()
     }
@@ -1728,16 +1775,52 @@ class MainActivity : Activity(), SensorEventListener {
                 (0..36).map { index -> index * 10.0 })
         } ?: emptyFeatures()
         (map?.style?.getSource("gps-accuracy") as? GeoJsonSource)?.setGeoJson(accuracy)
-        val sector = if (showCone && headingSensor != null && point != null) {
-            val headings = (-35..35 step 5).map { headingDegrees.toDouble() + it }
-            val ring = listOf(Point.fromLngLat(point.longitude, point.latitude)) +
-                headings.map { geoPoint(point.latitude, point.longitude, 600.0, it) } +
-                Point.fromLngLat(point.longitude, point.latitude)
+        val visibleDirection = showCone && headingSensor != null && point != null
+        val sector = if (visibleDirection && point != null) {
+            // Convert the visible screen scale into metres. The previous fixed 600 m
+            // radius disappeared when the user zoomed out.
+            val resolution = (156543.03392 * cos(Math.toRadians(point.latitude))
+                .coerceAtLeast(0.01)) / 2.0.pow((map?.cameraPosition?.zoom ?: 13.0))
+            val screen = kotlin.math.min(mapView.width, mapView.height)
+                .coerceAtLeast(dp(320)).toDouble()
+            val length = (resolution * screen * 0.39).coerceIn(30.0, 800000.0)
+            val headings = (-38..38 step 4).map { headingDegrees.toDouble() + it }
+            val origin = Point.fromLngLat(point.longitude, point.latitude)
+            val ring = listOf(origin) +
+                headings.map { geoPoint(point.latitude, point.longitude, length, it) } +
+                origin
             FeatureCollection.fromFeatures(arrayOf(
                 Feature.fromGeometry(Polygon.fromLngLats(listOf(ring)))
             ))
         } else emptyFeatures()
         (map?.style?.getSource("heading-cone") as? GeoJsonSource)?.setGeoJson(sector)
+        if (visibleDirection && point != null) {
+            val resolution = 156543.03392 *
+                cos(Math.toRadians(point.latitude)).coerceAtLeast(0.01) /
+                2.0.pow(map?.cameraPosition?.zoom ?: 13.0)
+            val px = kotlin.math.min(mapView.width, mapView.height)
+                .coerceAtLeast(dp(320)).toDouble()
+            val length = (resolution * px * 0.39).coerceIn(30.0, 800000.0)
+            val origin = Point.fromLngLat(point.longitude, point.latitude)
+            val outline = listOf(origin) +
+                (-38..38 step 4).map {
+                    geoPoint(point.latitude, point.longitude, length,
+                        headingDegrees.toDouble() + it)
+                } + origin
+            val border = Feature.fromGeometry(LineString.fromLngLats(outline))
+            val ray = Feature.fromGeometry(LineString.fromLngLats(listOf(origin,
+                geoPoint(point.latitude, point.longitude, length * 1.07,
+                    headingDegrees.toDouble()))))
+            (map?.style?.getSource("heading-border") as? GeoJsonSource)?.setGeoJson(
+                FeatureCollection.fromFeatures(arrayOf(border)))
+            (map?.style?.getSource("heading-ray") as? GeoJsonSource)?.setGeoJson(
+                FeatureCollection.fromFeatures(arrayOf(ray)))
+        } else {
+            (map?.style?.getSource("heading-border") as? GeoJsonSource)
+                ?.setGeoJson(emptyFeatures())
+            (map?.style?.getSource("heading-ray") as? GeoJsonSource)
+                ?.setGeoJson(emptyFeatures())
+        }
         val site = servingSite
         val line = if (point == null || site == null) emptyFeatures() else
             FeatureCollection.fromFeatures(arrayOf(Feature.fromGeometry(
