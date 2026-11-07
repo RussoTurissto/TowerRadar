@@ -889,7 +889,6 @@ class MainActivity : Activity(), SensorEventListener {
         signalDetails.setOnClickListener { showSignalDetails() }
 
         sheetExtra = ScrollView(this).apply {
-            fillViewport = false
             isVerticalScrollBarEnabled = true
             visibility = View.GONE
         }
@@ -900,7 +899,7 @@ class MainActivity : Activity(), SensorEventListener {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(2), 0, dp(2), dp(22))
         }
-        sheetExtra.addView(controls, ScrollView.LayoutParams(-1, -2))
+        sheetExtra.addView(controls, FrameLayout.LayoutParams(-1, -2))
 
         controls.addView(sectionTitle("ПОИСК ВЫШЕК"))
         val filterRow = row()
