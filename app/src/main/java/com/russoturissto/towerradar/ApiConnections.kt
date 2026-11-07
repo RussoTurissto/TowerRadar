@@ -64,7 +64,8 @@ object ApiConnections {
         val mapType = if (provider.id == "google-road") "roadmap" else "satellite"
         val body = JSONObject().put("mapType", mapType)
             .put("language", "ru-RU")
-            .put("region", "RU")
+            .put("region", Locale.getDefault().country
+                .takeIf { it.length == 2 }?.uppercase(Locale.US) ?: "US")
         if (provider.id == "google-hybrid") {
             body.put("layerTypes", JSONArray().put("layerRoadmap"))
             body.put("overlay", false)
