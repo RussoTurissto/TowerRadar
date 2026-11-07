@@ -4,6 +4,8 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
+import android.net.Uri
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -68,7 +70,9 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var refresh: Button
     private lateinit var locate: Button
     private lateinit var searchHere: Button
-    private lateinit var sourceButton: Button
+    private lateinit var sourceSpinner: Spinner
+    private lateinit var mapAttribution: TextView
+    private lateinit var brandLink: TextView
     private lateinit var keyButton: Button
     private lateinit var headingView: TextView
     private lateinit var mapStatus: TextView
@@ -150,13 +154,16 @@ class MainActivity : Activity(), SensorEventListener {
         return image
     }
 
-    private fun applyBasemap(provider: MapProvider) {
+    private fun applyBasemap(provider: MapProvider, key: String = "") {
         val current = map ?: return
         styled = false
         providerIndex = MapSources.providers.indexOf(provider).coerceAtLeast(0)
-        if (::sourceButton.isInitialized) sourceButton.text = "Карта: " + provider.name
-        if (::mapStatus.isInitialized) mapStatus.text = "Подложка: " + provider.attribution
-        current.setStyle(MapSources.style(provider)) { style ->
+        if (::mapStatus.isInitialized) mapStatus.text = "Подложка: " + provider.name
+        if (::mapAttribution.isInitialized) mapAttribution.text = provider.attribution
+        if (::brandLink.isInitialized) {
+            brandLink.visibility = if (provider.id == "yandex") View.VISIBLE else View.GONE
+        }
+        current.setStyle(MapSources.style(provider, key)) { style ->
             style.addSource(GeoJsonSource("towers", emptyFeatures()))
             style.addSource(GeoJsonSource("my-location", emptyFeatures()))
 
@@ -220,7 +227,7 @@ class MainActivity : Activity(), SensorEventListener {
         val point = location?.let { LatLng(it.latitude, it.longitude) }
             ?: center ?: LatLng(49.0, 39.0)
         executor.execute {
-            val selected = MapSources.providers.indexOfFirst {
+            val selected = MapSources.unkeyed().indexOfFirst {
                 MapSources.reachable(it, point.latitude, point.longitude)
             }
             runOnUiThread {
@@ -229,34 +236,78 @@ class MainActivity : Activity(), SensorEventListener {
                 if (selected >= 0) {
                     if (selected != providerIndex) applyBasemap(MapSources.providers[selected])
                     mapStatus.text = "Подложка: " + MapSources.providers[selected].attribution
-                } else mapStatus.text = "Серверы карты не отвечают. Нажмите «Карта» для повторной проверки."
+                } else mapStatus.text = "OSM недоступен. Выберите другой источник в списке."
             }
         }
     }
 
-    private fun nextBasemap() {
+
+    private fun useMapChoice(provider: MapProvider) {
+        val key = provider.keyPref?.let {
+            getPreferences(Context.MODE_PRIVATE).getString(it, "").orEmpty()
+        }.orEmpty()
+        if (provider.keyPref != null && key.isBlank()) {
+            requestMapKey(provider)
+            return
+        }
+        if (choosingMap) {
+            mapStatus.text = "Сервер карты ещё проверяется."
+            return
+        }
+        choosingMap = true
+        mapStatus.text = "Проверяем " + provider.name + "…"
         val point = location?.let { LatLng(it.latitude, it.longitude) }
             ?: center ?: LatLng(49.0, 39.0)
-        if (choosingMap) return
-        choosingMap = true
-        mapStatus.text = "Проверяем другой сервер карты…"
-        val start = (providerIndex + 1) % MapSources.providers.size
         executor.execute {
-            var candidate = -1
-            for (offset in MapSources.providers.indices) {
-                val index = (start + offset) % MapSources.providers.size
-                if (MapSources.reachable(MapSources.providers[index], point.latitude, point.longitude)) {
-                    candidate = index
-                    break
-                }
-            }
+            val reachable = MapSources.reachable(provider, point.latitude, point.longitude, key)
             runOnUiThread {
                 choosingMap = false
                 if (isFinishing || isDestroyed) return@runOnUiThread
-                if (candidate >= 0) applyBasemap(MapSources.providers[candidate])
-                else mapStatus.text = "Ни один сервер карты пока недоступен без VPN."
+                if (reachable) {
+                    getPreferences(Context.MODE_PRIVATE).edit()
+                        .putString("map_provider", provider.id).apply()
+                    applyBasemap(provider, key)
+                } else {
+                    mapStatus.text = "Не удалось загрузить " + provider.name +
+                        ". Проверьте ключ или выберите другой сервер."
+                }
             }
         }
+    }
+
+    private fun requestMapKey(provider: MapProvider) {
+        val pref = provider.keyPref ?: return
+        val input = EditText(this).apply {
+            hint = "API-ключ " + provider.name
+            setSingleLine(true)
+            setText(getPreferences(Context.MODE_PRIVATE).getString(pref, ""))
+        }
+        val address = if (provider.id == "yandex")
+            "developer.tech.yandex.ru (Tiles API)" else "platform.2gis.ru (Raster Tiles API)"
+        AlertDialog.Builder(this)
+            .setTitle(provider.name)
+            .setMessage(
+                "Для этой карты с русскими подписями нужен личный ключ. " +
+                    "Получите его на " + address + ". Доступ и лимиты определяет поставщик. " +
+                    "Ключ хранится только на телефоне, без отправки в GitHub."
+            )
+            .setView(input)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val key = input.text.toString().trim()
+                if (key.isNotEmpty()) {
+                    getPreferences(Context.MODE_PRIVATE).edit()
+                        .putString(pref, key).apply()
+                    useMapChoice(provider)
+                } else {
+                    mapStatus.text = "Введите ключ, чтобы включить " + provider.name
+                }
+            }
+            .setNeutralButton("Удалить ключ") { _, _ ->
+                getPreferences(Context.MODE_PRIVATE).edit().remove(pref).apply()
+                mapStatus.text = "Ключ " + provider.name + " удалён."
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun editCellKey() {
@@ -305,7 +356,10 @@ class MainActivity : Activity(), SensorEventListener {
             map = ready
             ready.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(20.0, 0.0), 2.5))
             applyBasemap(MapSources.providers[0])
-            chooseBasemap()
+            val savedId = getPreferences(Context.MODE_PRIVATE)
+                .getString("map_provider", "auto") ?: "auto"
+            val saved = MapSources.providers.firstOrNull { it.id == savedId }
+            if (saved == null) chooseBasemap() else useMapChoice(saved)
             ready.addOnMapClickListener { tapped ->
                 selectTower(tapped)
                 true
@@ -379,11 +433,37 @@ class MainActivity : Activity(), SensorEventListener {
             gravity = Gravity.CENTER_VERTICAL
         }
         options.addView(headingView, LinearLayout.LayoutParams(dp(79), dp(44)))
-        sourceButton = Button(this).apply { text = "Карта"; textSize = 11f; isAllCaps = false }
+        sourceSpinner = Spinner(this)
+        sourceSpinner.adapter = choice(listOf("Карта: авто") + MapSources.providers.map { it.name })
+        val prefId = getPreferences(Context.MODE_PRIVATE)
+            .getString("map_provider", "auto") ?: "auto"
+        val initial = MapSources.providers.indexOfFirst { it.id == prefId }
+        sourceSpinner.setSelection(initial + 1)
         keyButton = Button(this).apply { text = "Доп. соты"; textSize = 11f; isAllCaps = false }
-        options.addView(sourceButton, LinearLayout.LayoutParams(0, dp(44), 1f))
-        options.addView(keyButton, LinearLayout.LayoutParams(0, dp(44), 1f))
-        sourceButton.setOnClickListener { nextBasemap() }
+        options.addView(sourceSpinner, LinearLayout.LayoutParams(0, dp(44), 1f))
+        options.addView(keyButton, LinearLayout.LayoutParams(dp(96), dp(44)))
+        sourceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            override fun onItemSelected(
+                parent: AdapterView<*>?, view: View?, position: Int, id: Long
+            ) {
+                if (map == null) return
+                if (position == 0) {
+                    getPreferences(Context.MODE_PRIVATE).edit()
+                        .putString("map_provider", "auto").apply()
+                    chooseBasemap()
+                } else {
+                    useMapChoice(MapSources.providers[position - 1])
+                }
+            }
+        }
+        sourceSpinner.setOnLongClickListener {
+            val item = MapSources.providers.getOrNull(sourceSpinner.selectedItemPosition - 1)
+            if (item?.keyPref != null) {
+                requestMapKey(item)
+                true
+            } else false
+        }
         keyButton.setOnClickListener { editCellKey() }
 
         locate = Button(this).apply {
@@ -422,11 +502,23 @@ class MainActivity : Activity(), SensorEventListener {
         detailBody = text("", 13f, Color.rgb(71, 85, 105))
         details.addView(detailBody)
 
-        root.addView(text("© OpenStreetMap contributors · выбранная подложка", 10f, Color.rgb(51, 65, 85)).apply {
+        mapAttribution = text("© OpenStreetMap contributors", 10f, Color.rgb(51, 65, 85)).apply {
             setPadding(dp(6), dp(3), dp(6), dp(3))
             background = rounded(Color.WHITE, 3)
-        }, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.BOTTOM).apply {
+        }
+        root.addView(mapAttribution, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.BOTTOM).apply {
             setMargins(dp(8), 0, 0, dp(9))
+        })
+        brandLink = text("Яндекс Карты", 12f, Color.rgb(220, 38, 38)).apply {
+            setPadding(dp(8), dp(5), dp(8), dp(5))
+            background = rounded(Color.WHITE, 4)
+            visibility = View.GONE
+            setOnClickListener {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://yandex.ru/maps/")))
+            }
+        }
+        root.addView(brandLink, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.BOTTOM).apply {
+            setMargins(0, 0, dp(8), dp(8))
         })
 
         radius.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
