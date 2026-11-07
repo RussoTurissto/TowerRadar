@@ -45,6 +45,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Spinner
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.AdapterView
 import org.maplibre.android.MapLibre
@@ -95,7 +96,14 @@ class MainActivity : Activity(), SensorEventListener {
     private var crosshairStartZoom = 12.5
     private var systemTopInset = 0
     private var systemBottomInset = 0
-    private var sectorIntensity = 1
+    private var beamBrightness = 85
+    private var sectorBrightness = 35
+    private val apiChecks = mutableMapOf<String, ApiProbe>()
+    private val checkingApi = mutableSetOf<String>()
+    private val googleSessions = mutableMapOf<String, GoogleTileSession>()
+    private var googleMapSession: GoogleTileSession? = null
+    private var lastGoogleAttributionAt = 0L
+    private var lastGoogleAttributionKey = ""
     private lateinit var rootView: FrameLayout
     private lateinit var sheetView: LinearLayout
     private lateinit var sheetExtra: ScrollView
@@ -220,16 +228,35 @@ class MainActivity : Activity(), SensorEventListener {
         return image
     }
 
-    private fun applyBasemap(provider: MapProvider, key: String = "") {
+    private fun applyBasemap(provider: MapProvider, key: String = "",
+                             session: GoogleTileSession? = null) {
         val current = map ?: return
+        if (provider.id.startsWith("google-") && (session == null || !session.valid())) {
+            mapStatus.text = "Google · требуется действующий сеанс Map Tiles API"
+            return
+        }
+        googleMapSession = if (provider.id.startsWith("google-")) session else null
+        lastGoogleAttributionAt = 0L
         styled = false
         providerIndex = MapSources.providers.indexOf(provider).coerceAtLeast(0)
         if (::mapStatus.isInitialized) mapStatus.text = "Подложка: " + provider.name
-        if (::mapAttribution.isInitialized) mapAttribution.text = provider.attribution
+        if (::mapAttribution.isInitialized) mapAttribution.text =
+            if (provider.id.startsWith("google-"))
+                "Google Maps · данные об авторских правах загружаются"
+            else provider.attribution
         if (::brandLink.isInitialized) {
-            brandLink.visibility = if (provider.id == "yandex") View.VISIBLE else View.GONE
+            brandLink.visibility = if (provider.id == "yandex" ||
+                provider.id.startsWith("google-")) View.VISIBLE else View.GONE
+            brandLink.text = if (provider.id.startsWith("google-"))
+                "Google Maps" else "Яндекс Карты"
+            brandLink.contentDescription = brandLink.text
+            brandLink.setOnClickListener {
+                val address = if (provider.id.startsWith("google-"))
+                    "https://www.google.com/maps" else "https://yandex.ru/maps/"
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(address)))
+            }
         }
-        current.setStyle(MapSources.style(provider, key)) { style ->
+        current.setStyle(MapSources.style(provider, key, session?.token.orEmpty())) { style ->
             if (palette.dark && provider.keyPref == null) {
                 (style.getLayer("basemap-layer") as? RasterLayer)?.setProperties(
                     PropertyFactory.rasterBrightnessMax(0.66f),
@@ -333,6 +360,7 @@ class MainActivity : Activity(), SensorEventListener {
             showPins()
             updateOverlays()
             if (!initiallyCentered) center?.let(::moveCamera)
+            if (provider.id.startsWith("google-")) requestGoogleAttribution(force = true)
         }
     }
 
@@ -364,7 +392,9 @@ class MainActivity : Activity(), SensorEventListener {
             getPreferences(Context.MODE_PRIVATE).getString(it, "").orEmpty()
         }.orEmpty()
         if (provider.keyPref != null && key.isBlank()) {
-            if (provider.id == "yandex") showYandexSetup() else requestMapKey(provider)
+            if (provider.id == "yandex") showYandexSetup()
+            else if (provider.id.startsWith("google-")) showGoogleSetup()
+            else requestMapKey(provider)
             return
         }
         if (choosingMap) {
@@ -373,20 +403,69 @@ class MainActivity : Activity(), SensorEventListener {
         }
         choosingMap = true
         mapStatus.text = "Проверяем " + provider.name + "…"
-        val point = location?.let { LatLng(it.latitude, it.longitude) }
-            ?: center ?: LatLng(49.0, 39.0)
+        val point = activeUserPoint() ?: center ?: LatLng(49.0, 39.0)
         executor.execute {
-            val reachable = MapSources.reachable(provider, point.latitude, point.longitude, key)
+            val test = ApiConnections.checkMap(provider, point.latitude, point.longitude, key)
             runOnUiThread {
                 choosingMap = false
                 if (isFinishing || isDestroyed) return@runOnUiThread
-                if (reachable) {
+                val pref = provider.keyPref
+                if (pref != null &&
+                    getPreferences(Context.MODE_PRIVATE).getString(pref, "") == key) {
+                    apiChecks[pref] = test
+                    checkingApi.remove(pref)
+                }
+                if (test.connected) {
                     getPreferences(Context.MODE_PRIVATE).edit()
                         .putString("map_provider", provider.id).apply()
-                    applyBasemap(provider, key)
+                    test.session?.let { googleSessions[provider.id] = it }
+                    applyBasemap(provider, key, test.session)
+                    mapStatus.text = "✓ " + provider.name + " · подключено"
                 } else {
-                    mapStatus.text = "Не удалось загрузить " + provider.name +
-                        ". Проверьте ключ или выберите другой сервер."
+                    mapStatus.text = test.message + " · переключаемся на OSM"
+                    getPreferences(Context.MODE_PRIVATE).edit()
+                        .putString("map_provider", "auto").apply()
+                    chooseBasemap()
+                }
+            }
+        }
+    }
+
+    /** Google source attributions are viewport-dependent and must stay visible. */
+    private fun requestGoogleAttribution(force: Boolean = false) {
+        val current = map ?: return
+        if (!MapSources.providers.getOrNull(providerIndex)?.id.orEmpty()
+                .startsWith("google-")) return
+        val session = googleMapSession?.takeIf { it.valid() } ?: return
+        if (!force && System.currentTimeMillis() - lastGoogleAttributionAt < 15000L) return
+        val key = getPreferences(Context.MODE_PRIVATE)
+            .getString("map_key_google", "").orEmpty()
+        if (key.isBlank()) return
+        lastGoogleAttributionAt = System.currentTimeMillis()
+        val bounds = current.projection.visibleRegion.latLngBounds
+        val north = bounds.northEast.latitude
+        val south = bounds.southWest.latitude
+        val east = bounds.northEast.longitude
+        val west = bounds.southWest.longitude
+        val zoom = current.cameraPosition.zoom.toInt()
+        val providerId = MapSources.providers[providerIndex].id
+        executor.execute {
+            val copyright = ApiConnections.googleCopyright(key, session, zoom,
+                north, south, east, west)
+            runOnUiThread {
+                if (!isDestroyed && !isFinishing &&
+                    MapSources.providers.getOrNull(providerIndex)?.id == providerId &&
+                    googleMapSession?.token == session.token) {
+                    if (copyright != null) {
+                        lastGoogleAttributionKey = copyright
+                        mapAttribution.text = "Google Maps · " + copyright +
+                            "\nВышки: © OpenStreetMap contributors"
+                    } else if (lastGoogleAttributionKey.isNotBlank()) {
+                        mapAttribution.text = "Google Maps · " + lastGoogleAttributionKey +
+                            "\nВышки: © OpenStreetMap contributors"
+                    } else {
+                        mapAttribution.text = "Google Maps · данные об авторских правах недоступны"
+                    }
                 }
             }
         }
@@ -631,6 +710,7 @@ class MainActivity : Activity(), SensorEventListener {
             .putString("manual_lat", point.latitude.toString())
             .putString("manual_lon", point.longitude.toString()).apply()
         status.text = "Геопозиция задана вручную · GPS не корректирует маркер"
+        details.visibility = View.GONE
         updateDot()
         moveCamera(point)
         lastFetch = null
@@ -640,6 +720,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun useAutomaticPosition() {
         manualPoint = null
         manualCenter = false
+        details.visibility = View.GONE
         getPreferences(Context.MODE_PRIVATE).edit()
             .remove("manual_lat").remove("manual_lon").apply()
         updateDot()
@@ -745,7 +826,8 @@ class MainActivity : Activity(), SensorEventListener {
             manualCenter = true
         }
         showCone = prefs.getBoolean("show_cone", true)
-        sectorIntensity = prefs.getInt("sector_intensity", 1).coerceIn(0, 2)
+        beamBrightness = prefs.getInt("beam_brightness", 85).coerceIn(0, 100)
+        sectorBrightness = prefs.getInt("sector_brightness", 35).coerceIn(0, 100)
         MapLibre.getInstance(this)
         HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder()
@@ -779,9 +861,11 @@ class MainActivity : Activity(), SensorEventListener {
             ready.addOnCameraIdleListener {
                 updateOverlays()
                 if (isChoosingCrosshair) updateCrosshairCoordinates()
+                requestGoogleAttribution()
             }
         }
         askLocation()
+        verifySavedConnections()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
@@ -1122,6 +1206,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         mapAttribution = text("© OpenStreetMap contributors", 10f, palette.text).apply {
             setPadding(dp(6), dp(3), dp(6), dp(3))
+            maxWidth = dp(310)
             background = rounded(palette.surface, 3)
         }
         rootView.addView(mapAttribution, FrameLayout.LayoutParams(-2, -2,
@@ -1334,7 +1419,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         if (::brandLink.isInitialized) {
             brandLink.layoutParams = (brandLink.layoutParams as FrameLayout.LayoutParams).apply {
-                bottomMargin = footerMargin
+                bottomMargin = footerMargin + dp(36)
             }
         }
         if (::details.isInitialized) {
@@ -1733,7 +1818,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun updateDot() {
         if (!styled) return
-        val point = manualPoint ?: location?.let { LatLng(it.latitude, it.longitude) }
+        val point = activeUserPoint()
         val features = if (point == null) emptyFeatures() else FeatureCollection.fromFeatures(
             arrayOf(Feature.fromGeometry(Point.fromLngLat(point.longitude, point.latitude)))
         )
@@ -1836,6 +1921,10 @@ class MainActivity : Activity(), SensorEventListener {
         (map?.style?.getSource("serving-cell") as? GeoJsonSource)?.setGeoJson(cell)
     }
 
+    /** The sole distance origin. Panning the map never changes this coordinate. */
+    private fun activeUserPoint(): LatLng? =
+        manualPoint ?: location?.let { LatLng(it.latitude, it.longitude) }
+
     private fun selectTower(tapped: LatLng) {
         val currentMap = map ?: return
         val touch = currentMap.projection.toScreenLocation(tapped)
@@ -1852,7 +1941,7 @@ class MainActivity : Activity(), SensorEventListener {
             return
         }
         detailTitle.text = nearest.name ?: nearest.operator ?: "Объект связи"
-        val from = location?.let { LatLng(it.latitude, it.longitude) } ?: center
+        val from = activeUserPoint()
         val distance = from?.let {
             String.format(Locale.US, "%.2f км", TowerData.distanceKm(
                 it.latitude, it.longitude, nearest.latitude, nearest.longitude))
@@ -1862,7 +1951,9 @@ class MainActivity : Activity(), SensorEventListener {
             if (nearest.mobile) "Сотовая связь отмечена в OSM" else "Назначение вышки не подтверждено",
             nearest.technology?.let { "Технологии: " + it },
             nearest.height?.let { "Высота: " + it },
-            "Расстояние: " + distance,
+            "Расстояние от " +
+                if (manualPoint != null) "ручной точки: " + distance
+                else "GPS: " + distance,
             String.format(Locale.US, "Координаты: %.6f, %.6f", nearest.latitude, nearest.longitude),
             "База: " + nearest.source,
             "Источник: " + nearest.url
