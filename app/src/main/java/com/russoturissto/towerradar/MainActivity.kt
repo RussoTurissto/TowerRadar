@@ -91,6 +91,8 @@ class MainActivity : Activity(), SensorEventListener {
     private val apiExecutor = Executors.newFixedThreadPool(2)
     private lateinit var topHeader: LinearLayout
     private lateinit var crosshairReticle: CrosshairView
+    private lateinit var northIndicator: NorthIndicatorView
+    private var directionPanel: LinearLayout? = null
     private lateinit var crosshairControls: LinearLayout
     private lateinit var crosshairCoordinates: TextView
     private var isChoosingCrosshair = false
@@ -821,56 +823,95 @@ class MainActivity : Activity(), SensorEventListener {
         )
     }
 
+    /**
+     * Compact, non-modal overlay: the map remains fully visible and touchable.
+     * The existing MapLibre line/fill properties are changed on every slider event.
+     */
     private fun showDirectionBrightness() {
-        val layout = LinearLayout(this).apply {
+        if (directionPanel != null) {
+            hideDirectionPanel()
+            return
+        }
+        if (isChoosingCrosshair) finishCrosshairMode(false)
+        if (mapFullscreen) setMapFullscreen(false)
+        if (sheetExpanded) expandSheet(false)
+
+        val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = rounded(palette.surface, 17)
+            elevation = dp(13).toFloat()
+            setPadding(dp(12), dp(8), dp(12), dp(9))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
         }
-        val help = text("Бирюзовый пунктир — азимут телефона. Мягкий сектор — зона направления. " +
-            "Каждый элемент можно сделать невидимым, установив 0%. " +
-            "Кольцо позиции останется.", 13f, palette.secondary).apply {
-            setPadding(dp(5), dp(5), dp(5), dp(12))
-        }
-        layout.addView(help)
-        fun addSlider(title: String, current: Int, onChanged: (Int) -> Unit) {
-            val header = row().apply { gravity = Gravity.CENTER_VERTICAL }
-            val name = text(title, 14f, palette.text).apply {
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-            }
-            header.addView(name, LinearLayout.LayoutParams(0, -2, 1f))
-            val valueLabel = text("$current%", 14f, palette.olive)
-            header.addView(valueLabel)
-            layout.addView(header)
-            val slider = SeekBar(this).apply {
+        directionPanel = panel
+        // Leave room for the right-hand map rail rather than covering it.
+        val width = (resources.displayMetrics.widthPixels - dp(88))
+            .coerceAtMost(dp(390)).coerceAtLeast(dp(210))
+        rootView.addView(panel, FrameLayout.LayoutParams(
+            width, -2, Gravity.START or Gravity.BOTTOM
+        ).apply { setMargins(dp(11), 0, 0, systemBottomInset + dp(96)) })
+
+        val head = row()
+        panel.addView(head, LinearLayout.LayoutParams(-1, dp(27)))
+        head.addView(text("Направление", 14f, palette.text).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        head.addView(text("✕", 21f, palette.secondary).apply {
+            contentDescription = "Закрыть настройку направления"
+            gravity = Gravity.CENTER
+            setPadding(dp(8), 0, dp(2), 0)
+            setOnClickListener { hideDirectionPanel() }
+        }, LinearLayout.LayoutParams(dp(38), -1))
+
+        fun sliderRow(title: String, start: Int, onValue: (Int) -> Unit) {
+            val label = row()
+            panel.addView(label, LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = dp(4)
+            })
+            label.addView(text(title, 12f, palette.text),
+                LinearLayout.LayoutParams(0, -2, 1f))
+            val currentValue = text("$start%", 12f, palette.olive)
+            label.addView(currentValue)
+            val seek = SeekBar(this).apply {
                 max = 100
-                progress = current
+                progress = start
                 progressTintList = ColorStateList.valueOf(palette.olive)
                 thumbTintList = ColorStateList.valueOf(palette.olive)
+                contentDescription = title
+                setPadding(0, 0, 0, 0)
             }
-            slider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(view: SeekBar?, progress: Int, fromUser: Boolean) {
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (!fromUser) return
-                    valueLabel.text = "$progress%"
-                    onChanged(progress)
+                    currentValue.text = "$progress%"
+                    onValue(progress)
                     updateDirectionStyle()
                 }
-                override fun onStartTrackingTouch(view: SeekBar?) = Unit
-                override fun onStopTrackingTouch(view: SeekBar?) = Unit
+                override fun onStartTrackingTouch(bar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(bar: SeekBar?) = Unit
             })
-            layout.addView(slider, LinearLayout.LayoutParams(-1, dp(58)))
+            panel.addView(seek, LinearLayout.LayoutParams(-1, dp(34)))
         }
-        addSlider("Яркость пунктирного луча", beamBrightness) {
+        sliderRow("Пунктирный луч", beamBrightness) {
             beamBrightness = it
             getPreferences(Context.MODE_PRIVATE).edit().putInt("beam_brightness", it).apply()
         }
-        addSlider("Яркость сектора", sectorBrightness) {
+        sliderRow("Сектор", sectorBrightness) {
             sectorBrightness = it
             getPreferences(Context.MODE_PRIVATE).edit().putInt("sector_brightness", it).apply()
         }
-        KhakiDialogBuilder(this, palette).setTitle("Индикатор направления")
-            .setView(layout)
-            .setPositiveButton("Готово", null)
-            .show()
+        val finish = row().apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
+        panel.addView(finish, LinearLayout.LayoutParams(-1, dp(35)).apply {
+            topMargin = dp(2)
+        })
+        finish.addView(styledButton("Готово", 12f, true).apply {
+            setOnClickListener { hideDirectionPanel() }
+        }, LinearLayout.LayoutParams(dp(88), dp(34)))
+    }
+
+    private fun hideDirectionPanel() {
+        directionPanel?.let { rootView.removeView(it) }
+        directionPanel = null
     }
 
     private fun connectionStatus(pref: String): String {
@@ -1488,6 +1529,9 @@ class MainActivity : Activity(), SensorEventListener {
         mapView.onCreate(state)
         mapView.getMapAsync { ready ->
             map = ready
+            // Replace MapLibre's circular compass with our independent N + pointer.
+            ready.uiSettings.isCompassEnabled = false
+            northIndicator.setMapBearing(ready.cameraPosition.bearing)
             ready.moveCamera(CameraUpdateFactory.newLatLngZoom(
                 center ?: LatLng(20.0, 0.0), if (center == null) 2.5 else 12.5))
             applyBasemap(MapSources.providers[0])
@@ -1504,9 +1548,14 @@ class MainActivity : Activity(), SensorEventListener {
                     true
                 }
             }
+            ready.addOnCameraMoveListener {
+                if (isChoosingCrosshair) updateCrosshairCoordinates()
+                northIndicator.setMapBearing(ready.cameraPosition.bearing)
+            }
             ready.addOnCameraIdleListener {
                 updateOverlays()
                 if (isChoosingCrosshair) updateCrosshairCoordinates()
+                northIndicator.setMapBearing(ready.cameraPosition.bearing)
                 val selected = MapSources.providers.getOrNull(providerIndex)
                 if (selected?.id?.startsWith("google-") == true &&
                     googleMapSession?.valid() != true && !choosingMap) {
@@ -1605,11 +1654,25 @@ class MainActivity : Activity(), SensorEventListener {
         })
         settingsButton = styledButton("⚙", 22f).apply {
             contentDescription = "Настройки"
-            setOnClickListener { showSettings() }
+            setOnClickListener {
+                hideDirectionPanel()
+                showSettings()
+            }
         }
         header.addView(settingsButton, LinearLayout.LayoutParams(dp(43), dp(43)).apply {
             marginStart = dp(7)
         })
+
+        // Only the letter N and a slim arrow are painted. No background,
+        // compass disk or visible guide circle. Place it above the right rail.
+        northIndicator = NorthIndicatorView(this, palette.dark).apply {
+            contentDescription = "Направление севера на карте"
+            isClickable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+        rootView.addView(northIndicator, FrameLayout.LayoutParams(
+            dp(53), dp(60), Gravity.END or Gravity.BOTTOM
+        ).apply { setMargins(0, 0, dp(10), dp(294)) })
 
         // Right-side quick actions. Hidden while the sheet is expanded.
         floatingRail = LinearLayout(this).apply {
@@ -1873,13 +1936,13 @@ class MainActivity : Activity(), SensorEventListener {
         })
         // Crosshair mode is a separate, focused location picker: drag the map
         // under the reticle, tap a desired point or zoom for precise placement.
-        crosshairReticle = CrosshairView(this).apply {
+        crosshairReticle = CrosshairView(this, palette.dark).apply {
             visibility = View.GONE
             isClickable = false
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
         rootView.addView(crosshairReticle, FrameLayout.LayoutParams(
-            dp(95), dp(95), Gravity.CENTER
+            dp(64), dp(64), Gravity.CENTER
         ))
         crosshairControls = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1951,6 +2014,8 @@ class MainActivity : Activity(), SensorEventListener {
                     .apply { bottomMargin = bottom }
                 floatingRail.layoutParams = (floatingRail.layoutParams as FrameLayout.LayoutParams)
                     .apply { bottomMargin = bottom + dp(112) }
+                northIndicator.layoutParams = (northIndicator.layoutParams as FrameLayout.LayoutParams)
+                    .apply { bottomMargin = bottom + dp(294) }
                 crosshairControls.layoutParams =
                     (crosshairControls.layoutParams as FrameLayout.LayoutParams).apply {
                         bottomMargin = bottom + dp(16)
@@ -1966,6 +2031,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun startCrosshairMode() {
         val current = map ?: return
         if (isChoosingCrosshair) return
+        hideDirectionPanel()
         isChoosingCrosshair = true
         crosshairStart = current.cameraPosition.target
         crosshairStartZoom = current.cameraPosition.zoom
@@ -2011,7 +2077,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     @Deprecated("Deprecated by Android")
     override fun onBackPressed() {
-        if (isChoosingCrosshair) finishCrosshairMode(false)
+        if (directionPanel != null) hideDirectionPanel()
+        else if (isChoosingCrosshair) finishCrosshairMode(false)
         else if (sheetExpanded) expandSheet(false)
         else super.onBackPressed()
     }
@@ -2046,6 +2113,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun setMapFullscreen(full: Boolean) {
+        if (full) hideDirectionPanel()
         mapFullscreen = full
         sheetView.visibility = if (full) View.GONE else View.VISIBLE
         floatingRail.visibility =
@@ -2057,6 +2125,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun expandSheet(expanded: Boolean) {
+        if (expanded) hideDirectionPanel()
         if (mapFullscreen) setMapFullscreen(false)
         sheetExpanded = expanded
         sheetHandle.text = if (expanded) "⌄  Свернуть" else "⌃  Подробности"
@@ -2085,6 +2154,11 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun updateMapChrome(sheetHeight: Int) {
         val footerMargin = sheetHeight + dp(7) + systemBottomInset
+        directionPanel?.let { panel ->
+            panel.layoutParams = (panel.layoutParams as FrameLayout.LayoutParams).apply {
+                bottomMargin = footerMargin + dp(5)
+            }
+        }
         if (::mapAttribution.isInitialized) {
             mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
                 bottomMargin = footerMargin
