@@ -1,0 +1,80 @@
+name: Publish verified TowerRadar v0.4.0 APK
+on:
+  workflow_run:
+    workflows: ["Build Android APK"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select only latest successfully verified main-branch APK
+        id: selection
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SOURCE_RUN" ]]; then
+            SOURCE_RUN="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/android.yml/runs?branch=main&status=success&per_page=1" --jq '.workflow_runs[0].id')"
+            SOURCE_SHA="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" --jq '.head_sha')"
+          fi
+          HEAD="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq '.commit.sha')"
+          if [[ "$SOURCE_SHA" != "$HEAD" ]]; then
+            echo "Skipping stale build $SOURCE_RUN; HEAD is $HEAD"
+            exit 0
+          fi
+          echo "publish=yes" >> "$GITHUB_OUTPUT"
+          echo "run_id=$SOURCE_RUN" >> "$GITHUB_OUTPUT"
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Download and validate signed APK from CI
+        if: steps.selection.outputs.publish == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.selection.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p extracted checks
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name TowerRadar-debug-APK --dir extracted
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name TowerRadar-signature --dir checks
+          test -s extracted/app-debug.apk
+          grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' checks/signature.txt
+          expected="$(awk '{print $1}' checks/sha256.txt)"
+          actual="$(sha256sum extracted/app-debug.apk | awk '{print $1}')"
+          test "$expected" = "$actual"
+          cp extracted/app-debug.apk TowerRadar-v0.4.0-debug.apk
+          echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish direct GitHub Release APK download
+        if: steps.selection.outputs.publish == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.selection.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view v0.4.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v0.4.0 TowerRadar-v0.4.0-debug.apk --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create v0.4.0 TowerRadar-v0.4.0-debug.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$TARGET_SHA" \
+              --title "TowerRadar v0.4.0 — Khaki Modern, GPS, сигнал и сота" \
+              --notes "Проверенная тестовая Android-сборка: темы день/ночь/системная, хаки, точная и ручная геопозиция, компас и направление, уровни сигнала, обслуживающая сота и пунктир по данным OpenCellID. Android Lint, unit-тесты и криптографическая проверка APK выполнены в CI. Для Яндекс/2ГИС и OpenCellID требуются личные ключи. APK имеет временную DEBUG-подпись: установка поверх предыдущих сборок может потребовать удаления прежней версии. Оценка соты не означает подтверждённую физическую вышку." \
+              --prerelease
+          fi
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.4.0/TowerRadar-v0.4.0-debug.apk" >> "$GITHUB_STEP_SUMMARY"
