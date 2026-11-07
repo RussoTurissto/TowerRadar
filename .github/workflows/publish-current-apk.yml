@@ -1,4 +1,4 @@
-name: Publish verified TowerRadar v0.7.0 APK
+name: Publish verified TowerRadar v0.8.0 APK
 on:
   workflow_run:
     workflows: ["Build Android APK"]
@@ -57,7 +57,7 @@ jobs:
           expected="$(awk '{print $1}' checks/sha256.txt)"
           actual="$(sha256sum extracted/app-debug.apk | awk '{print $1}')"
           test "$expected" = "$actual"
-          cp extracted/app-debug.apk TowerRadar-v0.7.0-debug.apk
+          cp extracted/app-debug.apk TowerRadar-v0.8.0-debug.apk
           echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish direct GitHub Release APK download
@@ -67,14 +67,14 @@ jobs:
           TARGET_SHA: ${{ steps.selection.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view v0.7.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v0.7.0 TowerRadar-v0.7.0-debug.apk --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.8.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v0.8.0 TowerRadar-v0.8.0-debug.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.7.0 TowerRadar-v0.7.0-debug.apk \
+            gh release create v0.8.0 TowerRadar-v0.8.0-debug.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
-              --title "TowerRadar v0.7.0 — Google Tiles, API-статусы и новый компас" \
-              --notes "Предварительная сборка TowerRadar: официальные Google Map Tiles API (карта, спутник, гибрид), проверка ключей с галочкой только при успешном ответе сервера, диагностика Яндекс и 2ГИС, резервная OSM-подложка, расстояния от вручную выбранной точки либо GPS, компактный радарный сектор и бирюзовый пунктир с независимой регулировкой яркости. Нужны личные действующие API-ключи и соответствующие тарифы; для Google — Google Cloud Billing. Проверки GitHub Actions: unit-тесты, lint, APK v2 signature. DEBUG-подпись может отличаться от предыдущих сборок. Все версии до 1.0.0 — предварительные." \
+              --title "TowerRadar v0.8.0 — чёткие карты Яндекса и кеш просмотренных областей" \
+              --notes "Предварительная версия TowerRadar 0.8.0: исправлено масштабирование растровых карт; Яндекс Tiles API в HiDPI scale=2 (512px изображения в правильной 256px сетке). Включено повторное использование уже просмотренных OSM/Яндекс тайлов через внутренний кеш MapLibre: лимит 100/250/500 МБ, очистка из настроек, миграционная очистка старого кеша и автоочистка не позднее 29 суток. Google/2ГИС: кеш на диск отключён без явного разрешения поставщика, Google Tiles используется для отображения в реальном времени. Сохраняются Google Карты/Спутник/Гибрид, API-индикаторы, ручная геопозиция и компактный компас. CI: unit-тесты, lint и проверка подписи APK v2. APK имеет DEBUG-подпись: обновление поверх старой версии может не устанавливаться. Версия — prerelease, стабильная 1.0.0 только с отдельного разрешения пользователя." \
               --prerelease
           fi
-          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.7.0/TowerRadar-v0.7.0-debug.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.8.0/TowerRadar-v0.8.0-debug.apk" >> "$GITHUB_STEP_SUMMARY"
