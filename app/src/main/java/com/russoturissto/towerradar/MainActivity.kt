@@ -330,7 +330,7 @@ class MainActivity : Activity(), SensorEventListener {
             getPreferences(Context.MODE_PRIVATE).getString(it, "").orEmpty()
         }.orEmpty()
         if (provider.keyPref != null && key.isBlank()) {
-            requestMapKey(provider)
+            if (provider.id == "yandex") showYandexSetup() else requestMapKey(provider)
             return
         }
         if (choosingMap) {
@@ -355,6 +355,60 @@ class MainActivity : Activity(), SensorEventListener {
                         ". Проверьте ключ или выберите другой сервер."
                 }
             }
+        }
+    }
+
+    /**
+     * Login is opened in the official browser. Yandex ID itself cannot issue a Tiles API key:
+     * the user must activate Tiles API in the developer dashboard. We never collect passwords
+     * or attempt to scrape Yandex's dashboard. Clipboard is read only on explicit tap.
+     */
+    private fun showYandexSetup() {
+        AlertDialog.Builder(this)
+            .setTitle("Яндекс Карты · подключение")
+            .setMessage(
+                "1. Откройте официальный кабинет Яндекса и войдите через Яндекс ID.\n" +
+                "2. Подключите продукт «Tiles API» и выберите тариф. " +
+                "После активации ключ появится в разделе «Ключи».\n" +
+                "3. Скопируйте API-ключ, вернитесь в TowerRadar и нажмите «Вставить ключ».\n\n" +
+                "Вход в Яндекс ID сам по себе не выдаёт ключ карт. " +
+                "TowerRadar не получает пароль и не создаёт ключи в обход правил Яндекса."
+            )
+            .setPositiveButton("Войти через Яндекс ID") { _, _ ->
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://developer.tech.yandex.ru/"))
+                try { startActivity(intent) } catch (_: Exception) {
+                    Toast.makeText(this, "Нет приложения для открытия браузера", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNeutralButton("Вставить ключ") { _, _ -> importYandexKeyFromClipboard() }
+            .setNegativeButton("Ввести вручную") { _, _ ->
+                requestMapKey(MapSources.providers.first { it.id == "yandex" })
+            }
+            .show()
+    }
+
+    private fun importYandexKeyFromClipboard() {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val key = try {
+            clipboard.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim().orEmpty()
+        } catch (_: Exception) { "" }
+        if (!key.matches(Regex("[a-zA-Z0-9._-]{8,256}"))) {
+            AlertDialog.Builder(this).setTitle("Ключ не найден")
+                .setMessage("Скопируйте ключ продукта Tiles API из кабинета Яндекса. " +
+                    "Затем вернитесь в TowerRadar и нажмите «Вставить ключ».")
+                .setPositiveButton("Повторить") { _, _ -> showYandexSetup() }
+                .setNegativeButton("Отмена", null).show()
+            return
+        }
+        val provider = MapSources.providers.first { it.id == "yandex" }
+        getPreferences(Context.MODE_PRIVATE).edit()
+            .putString(provider.keyPref, key).apply()
+        Toast.makeText(this, "Ключ сохранён. Проверяем Яндекс Карты…", Toast.LENGTH_SHORT).show()
+        val index = MapSources.providers.indexOf(provider) + 1
+        if (sourceSpinner.selectedItemPosition != index) {
+            sourceSpinner.setSelection(index)
+        } else {
+            useMapChoice(provider)
         }
     }
 
@@ -417,11 +471,10 @@ class MainActivity : Activity(), SensorEventListener {
                     2 -> selectSim()
                     3 -> AlertDialog.Builder(this).setTitle("Картографические ключи")
                         .setItems(arrayOf("Яндекс Карты", "2ГИС")) { _, index ->
-                            requestMapKey(MapSources.providers.first { it.id ==
-                                if (index == 0) "yandex" else "2gis" })
+                            if (index == 0) showYandexSetup()
+                            else requestMapKey(MapSources.providers.first { it.id == "2gis" })
                         }.show()
-                    4 -> startActivity(Intent(Intent.ACTION_VIEW,
-                        Uri.parse("https://developer.tech.yandex.ru/")))
+                    4 -> showYandexSetup()
                     5 -> editCellKey()
                     6 -> {
                         showCone = !showCone
@@ -973,7 +1026,6 @@ class MainActivity : Activity(), SensorEventListener {
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         details.addView(detailBody)
-        details.setOnClickListener { showSignalDetails() }
 
         mapAttribution = text("© OpenStreetMap contributors", 10f, palette.text).apply {
             setPadding(dp(6), dp(3), dp(6), dp(3))
