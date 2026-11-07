@@ -89,6 +89,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var settingsButton: Button
     private lateinit var signalLabel: TextView
     private lateinit var signalDetails: TextView
+    private lateinit var cellStatus: TextView
     private lateinit var signalBars: LinearLayout
     private lateinit var gpsRefresh: Button
     private var showCone = true
@@ -367,6 +368,173 @@ class MainActivity : Activity(), SensorEventListener {
             .show()
     }
 
+
+    private fun showSettings() {
+        val items = arrayOf(
+            "Тема оформления: " + when(getPreferences(Context.MODE_PRIVATE)
+                .getString("app_theme", KhakiTheme.SYSTEM)) {
+                    KhakiTheme.DAY -> "Дневная"
+                    KhakiTheme.NIGHT -> "Ночная"
+                    else -> "Системная"
+                },
+            "Геопозиция: " + if (manualPoint == null) "Автоматическая" else "Ручная",
+            "SIM для отслеживания",
+            "Ключи Яндекс / 2ГИС",
+            "Дополнительные соты OpenCellID",
+            "Сектор направления: " + if (showCone) "Включён" else "Выключен"
+        )
+        AlertDialog.Builder(this).setTitle("Настройки · TowerRadar")
+            .setItems(items) { _, selected ->
+                when (selected) {
+                    0 -> selectTheme()
+                    1 -> showPositionOptions()
+                    2 -> selectSim()
+                    3 -> AlertDialog.Builder(this).setTitle("Картографические ключи")
+                        .setItems(arrayOf("Яндекс Карты", "2ГИС")) { _, index ->
+                            requestMapKey(MapSources.providers.first { it.id ==
+                                if (index == 0) "yandex" else "2gis" })
+                        }.show()
+                    4 -> editCellKey()
+                    5 -> {
+                        showCone = !showCone
+                        getPreferences(Context.MODE_PRIVATE).edit()
+                            .putBoolean("show_cone", showCone).apply()
+                        updateOverlays()
+                    }
+                }
+            }.setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun selectTheme() {
+        val prefs = getPreferences(Context.MODE_PRIVATE)
+        val current = prefs.getString("app_theme", KhakiTheme.SYSTEM)
+        AlertDialog.Builder(this).setTitle("Тема оформления")
+            .setSingleChoiceItems(KhakiTheme.names,
+                KhakiTheme.values.indexOf(current).coerceAtLeast(0)) { dialog, selected ->
+                prefs.edit().putString("app_theme", KhakiTheme.values[selected]).apply()
+                dialog.dismiss()
+                recreate()
+            }.setNegativeButton("Отмена", null).show()
+    }
+
+    private fun selectSim() {
+        if (!cellMonitor.hasPermission()) {
+            AlertDialog.Builder(this).setTitle("Доступ к SIM")
+                .setMessage("Чтобы определить активную соту и уровень сигнала, нужен доступ к телефону и точному местоположению.")
+                .setPositiveButton("Разрешить") { _, _ -> askLocation() }
+                .setNegativeButton("Отмена", null).show()
+            return
+        }
+        val options = cellMonitor.availableSubscriptions()
+        val labels = arrayOf("Автоматически · SIM для интернета") +
+            options.map { it.second + " (SIM ID " + it.first + ")" }
+        AlertDialog.Builder(this).setTitle("Отслеживать сеть SIM")
+            .setItems(labels) { _, i ->
+                val sub = if (i == 0) SubscriptionManager.INVALID_SUBSCRIPTION_ID
+                    else options[i - 1].first
+                getPreferences(Context.MODE_PRIVATE).edit().putInt("sim_id", sub).apply()
+                servingCell = null
+                servingSite = null
+                requestedCellId = null
+                updateOverlays()
+                cellMonitor.start(sub)
+            }.setNegativeButton("Отмена", null).show()
+    }
+
+    private fun showPositionOptions() {
+        AlertDialog.Builder(this).setTitle("Моя геопозиция")
+            .setItems(arrayOf("Установить в центре карты", "Ввести координаты",
+                "Вернуться к автоматической GPS")) { _, selection ->
+                when (selection) {
+                    0 -> map?.cameraPosition?.target?.let(::setManualPosition)
+                    1 -> enterManualCoordinates()
+                    2 -> useAutomaticPosition()
+                }
+            }.setNegativeButton("Отмена", null).show()
+    }
+
+    private fun enterManualCoordinates() {
+        val previous = manualPoint ?: center
+        val input = EditText(this).apply {
+            hint = "Широта, долгота"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setSingleLine(true)
+            if (previous != null) {
+                setText(String.format(Locale.US, "%.6f, %.6f",
+                    previous.latitude, previous.longitude))
+                setSelectAllOnFocus(true)
+            }
+        }
+        AlertDialog.Builder(this).setTitle("Геопозиция вручную")
+            .setMessage("Введите широту и долготу через запятую. В ручном режиме GPS не перемещает выбранную точку.")
+            .setView(input)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val parts = input.text.toString().trim().split(Regex("[,;\\s]+"))
+                val lat = parts.getOrNull(0)?.toDoubleOrNull()
+                val lon = parts.getOrNull(1)?.toDoubleOrNull()
+                if (lat != null && lon != null && lat in -90.0..90.0 &&
+                    lon in -180.0..180.0) setManualPosition(LatLng(lat, lon))
+                else status.text = "Некорректные координаты. Широта: −90…90, долгота: −180…180."
+            }
+            .setNegativeButton("Отмена", null).show()
+    }
+
+    private fun setManualPosition(point: LatLng) {
+        manualPoint = point
+        manualCenter = true
+        center = point
+        getPreferences(Context.MODE_PRIVATE).edit()
+            .putString("manual_lat", point.latitude.toString())
+            .putString("manual_lon", point.longitude.toString()).apply()
+        status.text = "Геопозиция задана вручную · GPS не корректирует маркер"
+        updateDot()
+        moveCamera(point)
+        lastFetch = null
+        load(force = true)
+    }
+
+    private fun useAutomaticPosition() {
+        manualPoint = null
+        manualCenter = false
+        getPreferences(Context.MODE_PRIVATE).edit()
+            .remove("manual_lat").remove("manual_lon").apply()
+        updateDot()
+        val point = location?.let { LatLng(it.latitude, it.longitude) }
+        if (point != null) {
+            center = point
+            moveCamera(point)
+            load(force = true)
+        } else {
+            status.text = "Ожидаем координаты GPS / Wi-Fi…"
+            askLocation()
+        }
+    }
+
+    private fun showSignalDetails() {
+        val reading = servingCell
+        val description = if (reading == null) {
+            "Данные обслуживающей соты недоступны. Разрешите точную геопозицию и доступ к телефону."
+        } else {
+            val metrics = listOfNotNull(
+                "Оператор: " + (reading.operator.ifBlank { "не указан" }),
+                "Сеть: " + reading.network,
+                "Сигнал: " + (reading.dbm?.toString()?.plus(" dBm") ?: "нет данных"),
+                reading.rsrp?.let { "RSRP: $it dBm" },
+                reading.rsrq?.let { "RSRQ: $it dB" },
+                reading.sinr?.let { "SINR: $it dB" },
+                "MCC: " + reading.mcc + " / MNC: " + reading.mnc,
+                "TAC/LAC: " + reading.area,
+                "Cell ID: " + reading.cellId,
+                "SIM ID: " + reading.subId,
+                if (servingSite == null) "Координаты обслуживающей соты неизвестны"
+                else "Маркер на карте: приблизительная позиция OpenCellID"
+            )
+            metrics.joinToString("\n")
+        }
+        AlertDialog.Builder(this).setTitle("Подключённая сеть")
+            .setMessage(description).setPositiveButton("Закрыть", null).show()
+    }
+
     private fun editCellKey() {
         val field = EditText(this).apply {
             hint = "Ключ OpenCellID"
@@ -398,20 +566,45 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     override fun onCreate(state: Bundle?) {
+        val mode = getPreferences(Context.MODE_PRIVATE)
+            .getString("app_theme", KhakiTheme.SYSTEM) ?: KhakiTheme.SYSTEM
+        setTheme(if (KhakiTheme.dark(this, mode))
+            android.R.style.Theme_Material_NoActionBar
+        else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(state)
+        palette = KhakiTheme.palette(this, mode)
+        window.statusBarColor = palette.canvas
+        window.navigationBarColor = palette.canvas
+        if (Build.VERSION.SDK_INT >= 26) {
+            window.decorView.systemUiVisibility =
+                if (palette.dark) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or
+                    View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        }
+        val prefs = getPreferences(Context.MODE_PRIVATE)
+        val storedLat = prefs.getString("manual_lat", null)?.toDoubleOrNull()
+        val storedLon = prefs.getString("manual_lon", null)?.toDoubleOrNull()
+        if (storedLat != null && storedLon != null &&
+            storedLat in -90.0..90.0 && storedLon in -180.0..180.0) {
+            manualPoint = LatLng(storedLat, storedLon)
+            center = manualPoint
+            manualCenter = true
+        }
+        showCone = prefs.getBoolean("show_cone", true)
         MapLibre.getInstance(this)
         HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "TowerRadar/0.2.0 (+https://github.com/RussoTurissto/TowerRadar)").build())
+                .header("User-Agent", "TowerRadar/0.4.0 (+https://github.com/RussoTurissto/TowerRadar)").build())
         }.build())
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         headingSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        cellMonitor = CellMonitor(this) { updated -> updateServingCell(updated) }
         createScreen()
         mapView.onCreate(state)
         mapView.getMapAsync { ready ->
             map = ready
-            ready.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(20.0, 0.0), 2.5))
+            ready.moveCamera(CameraUpdateFactory.newLatLngZoom(
+                center ?: LatLng(20.0, 0.0), if (center == null) 2.5 else 12.5))
             applyBasemap(MapSources.providers[0])
             val savedId = getPreferences(Context.MODE_PRIVATE)
                 .getString("map_provider", "auto") ?: "auto"
@@ -435,6 +628,18 @@ class MainActivity : Activity(), SensorEventListener {
         textSize = size
         setTextColor(color)
     }
+    private fun styledButton(label: String, size: Float = 12f, primary: Boolean = false): Button =
+        Button(this).apply {
+            text = label
+            textSize = size
+            isAllCaps = false
+            setTextColor(if (primary) palette.oliveText else palette.text)
+            background = rounded(if (primary) palette.olive else palette.accentSoft, 12)
+            setPadding(dp(8), 0, dp(8), 0)
+            minimumHeight = 0
+            minHeight = 0
+        }
+
     private fun choice(labels: List<String>): ArrayAdapter<String> =
         ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).also {
             it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
@@ -453,20 +658,65 @@ class MainActivity : Activity(), SensorEventListener {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(Color.rgb(249, 251, 255))
+            background = rounded(palette.surface)
             elevation = dp(8).toFloat()
         }
         val panelParams = FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
             setMargins(dp(12), dp(12), dp(12), 0)
         }
         root.addView(panel, panelParams)
-        panel.addView(text("◉  TowerRadar", 20f, Color.rgb(23, 37, 84)).apply {
+        val header = row()
+        panel.addView(header)
+        val title = text("◉  TowerRadar", 20f, palette.text).apply {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
+        header.addView(title, LinearLayout.LayoutParams(0, dp(43), 1f).apply {
+            gravity = Gravity.CENTER_VERTICAL
         })
-        status = text("Определяем местоположение…", 12f, Color.rgb(71, 85, 105))
+        gpsRefresh = styledButton("⌖", 22f)
+        gpsRefresh.contentDescription = "Уточнить GPS"
+        gpsRefresh.setOnClickListener {
+            if (!manualCenter) {
+                startLocationUpdates()
+                status.text = "Уточняем местоположение через GPS и Wi-Fi…"
+            } else status.text = "Активна ручная геопозиция. Для GPS нажмите кнопку ◎."
+        }
+        header.addView(gpsRefresh, LinearLayout.LayoutParams(dp(43), dp(42)).apply {
+            marginEnd = dp(6)
+        })
+        settingsButton = styledButton("⚙", 23f)
+        settingsButton.contentDescription = "Настройки TowerRadar"
+        settingsButton.setOnClickListener { showSettings() }
+        header.addView(settingsButton, LinearLayout.LayoutParams(dp(43), dp(42)))
+        status = text("Определяем местоположение…", 12f, palette.secondary)
         panel.addView(status)
-        mapStatus = text("Выбираем доступный сервер карты…", 11f, Color.rgb(100, 116, 139))
+        mapStatus = text("Выбираем доступный сервер карты…", 11f, palette.secondary)
         panel.addView(mapStatus)
+
+        val signalRow = row()
+        signalRow.setPadding(0, dp(6), 0, 0)
+        panel.addView(signalRow, LinearLayout.LayoutParams(-1, dp(47)))
+        signalLabel = text("Сеть: ожидаем данные SIM", 13f, palette.text).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
+        signalRow.addView(signalLabel, LinearLayout.LayoutParams(0, -2, 1f))
+        signalBars = LinearLayout(this).apply {
+            gravity = Gravity.BOTTOM
+            orientation = LinearLayout.HORIZONTAL
+        }
+        for (h in listOf(11, 15, 19, 23, 27)) {
+            signalBars.addView(View(this).apply {
+                background = rounded(palette.signalMuted, 3)
+            }, LinearLayout.LayoutParams(dp(10), dp(h)).apply { marginStart = dp(4) })
+        }
+        signalRow.addView(signalBars, LinearLayout.LayoutParams(-2, dp(29)))
+        signalDetails = text("Сигнал: нет измерения", 11f, palette.secondary)
+        panel.addView(signalDetails)
+        cellStatus = text("Обслуживающая сота: определяем…", 11f, palette.secondary)
+        panel.addView(cellStatus)
+        signalRow.setOnClickListener { showSignalDetails() }
+        signalDetails.setOnClickListener { showSignalDetails() }
+        cellStatus.setOnClickListener { showSignalDetails() }
 
         val filterRow = row()
         panel.addView(filterRow, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(8) })
@@ -480,23 +730,23 @@ class MainActivity : Activity(), SensorEventListener {
 
         val actions = row()
         panel.addView(actions, LinearLayout.LayoutParams(-1, dp(49)))
-        refresh = Button(this).apply { text = "Обновить вышки"; isAllCaps = false; textSize = 12f }
-        searchHere = Button(this).apply { text = "Искать здесь"; isAllCaps = false; textSize = 12f }
+        refresh = styledButton("Обновить вышки", 12f, true)
+        searchHere = styledButton("Искать здесь", 12f)
         actions.addView(refresh, LinearLayout.LayoutParams(0, dp(48), 1f))
         actions.addView(searchHere, LinearLayout.LayoutParams(0, dp(48), 1f))
         val options = row()
         panel.addView(options, LinearLayout.LayoutParams(-1, dp(44)))
-        headingView = text("▲ —°", 16f, Color.rgb(29, 78, 216)).apply {
+        headingView = text("➤ —°", 15f, palette.olive).apply {
             gravity = Gravity.CENTER_VERTICAL
         }
-        options.addView(headingView, LinearLayout.LayoutParams(dp(79), dp(44)))
+        options.addView(headingView, LinearLayout.LayoutParams(dp(103), dp(44)))
         sourceSpinner = Spinner(this)
         sourceSpinner.adapter = choice(listOf("Карта: авто") + MapSources.providers.map { it.name })
         val prefId = getPreferences(Context.MODE_PRIVATE)
             .getString("map_provider", "auto") ?: "auto"
         val initial = MapSources.providers.indexOfFirst { it.id == prefId }
         sourceSpinner.setSelection(initial + 1)
-        keyButton = Button(this).apply { text = "Доп. соты"; textSize = 11f; isAllCaps = false }
+        keyButton = styledButton("Доп. соты", 11f)
         options.addView(sourceSpinner, LinearLayout.LayoutParams(0, dp(44), 1f))
         options.addView(keyButton, LinearLayout.LayoutParams(dp(96), dp(44)))
         sourceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -523,13 +773,10 @@ class MainActivity : Activity(), SensorEventListener {
         }
         keyButton.setOnClickListener { editCellKey() }
 
-        locate = Button(this).apply {
-            text = "◎"
-            textSize = 25f
-            isAllCaps = false
-            contentDescription = "Показать моё местоположение"
-            background = rounded(Color.WHITE)
+        locate = styledButton("◎", 25f, true).apply {
+            contentDescription = "Вернуться к GPS"
             elevation = dp(6).toFloat()
+            setOnLongClickListener { showPositionOptions(); true }
         }
         root.addView(locate, FrameLayout.LayoutParams(dp(54), dp(54), Gravity.END or Gravity.BOTTOM).apply {
             setMargins(0, 0, dp(14), dp(64))
@@ -538,7 +785,7 @@ class MainActivity : Activity(), SensorEventListener {
         details = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(Color.WHITE)
+            background = rounded(palette.surface)
             elevation = dp(9).toFloat()
             visibility = View.GONE
         }
@@ -547,28 +794,26 @@ class MainActivity : Activity(), SensorEventListener {
         })
         val detailRow = row()
         details.addView(detailRow)
-        detailTitle = text("", 17f, Color.rgb(15, 23, 42)).apply {
+        detailTitle = text("", 17f, palette.text).apply {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         }
         detailRow.addView(detailTitle, LinearLayout.LayoutParams(0, -2, 1f))
-        detailRow.addView(Button(this).apply {
-            text = "✕"
-            isAllCaps = false
+        detailRow.addView(styledButton("✕", 18f).apply {
             setOnClickListener { details.visibility = View.GONE }
         }, LinearLayout.LayoutParams(dp(54), dp(44)))
-        detailBody = text("", 13f, Color.rgb(71, 85, 105))
+        detailBody = text("", 13f, palette.secondary)
         details.addView(detailBody)
 
-        mapAttribution = text("© OpenStreetMap contributors", 10f, Color.rgb(51, 65, 85)).apply {
+        mapAttribution = text("© OpenStreetMap contributors", 10f, palette.text).apply {
             setPadding(dp(6), dp(3), dp(6), dp(3))
-            background = rounded(Color.WHITE, 3)
+            background = rounded(palette.surface, 3)
         }
         root.addView(mapAttribution, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.BOTTOM).apply {
             setMargins(dp(8), 0, 0, dp(9))
         })
-        brandLink = text("Яндекс Карты", 12f, Color.rgb(220, 38, 38)).apply {
+        brandLink = text("Яндекс Карты", 12f, palette.olive).apply {
             setPadding(dp(8), dp(5), dp(8), dp(5))
-            background = rounded(Color.WHITE, 4)
+            background = rounded(palette.surface, 4)
             visibility = View.GONE
             setOnClickListener {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://yandex.ru/maps/")))
