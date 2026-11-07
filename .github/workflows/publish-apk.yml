@@ -1,0 +1,42 @@
+name: Publish verified TowerRadar APK
+on:
+  push:
+    paths:
+      - .github/workflows/publish-apk.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch verified APK from successful build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          gh run download 42366586605 --repo "$GITHUB_REPOSITORY" --name TowerRadar-debug-APK --dir extracted
+          cp extracted/app-debug.apk TowerRadar-v0.2.0-debug.apk
+          echo "3c95451dddea8b16e8823fee04a3cfc0a944ece7fde035ea8642bd45e143c964  TowerRadar-v0.2.0-debug.apk" | sha256sum --check
+          test "$(stat -c%s TowerRadar-v0.2.0-debug.apk)" -eq 53300467
+      - name: Publish direct APK download as pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view v0.2.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v0.2.0 TowerRadar-v0.2.0-debug.apk --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create v0.2.0 TowerRadar-v0.2.0-debug.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --target 3aba13e4370fba5015c1718c12341927858b08ef \
+              --title "TowerRadar v0.2.0 — тестовый APK" \
+              --notes "Тестовая Android-сборка с резервными серверами карт, направлением телефона и расширенным поиском вышек. Файл проверен GitHub Actions (SHA-256: 3c95451dddea8b16e8823fee04a3cfc0a944ece7fde035ea8642bd45e143c964). Подпись debug является временной; обновление поверх старой сборки может потребовать удаления предыдущей версии." \
+              --prerelease
+          fi
