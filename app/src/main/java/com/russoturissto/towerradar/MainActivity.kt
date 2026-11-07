@@ -7,6 +7,12 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.content.Context
+import android.content.res.Configuration
+import android.content.res.ColorStateList
+import android.os.Build
+import android.telephony.SubscriptionManager
+import android.os.SystemClock
+import android.text.InputType
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -40,6 +46,8 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.layers.FillLayer
+import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.PropertyFactory
@@ -47,6 +55,8 @@ import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.Point
+import org.maplibre.geojson.Polygon
+import org.maplibre.geojson.LineString
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -58,11 +68,31 @@ import org.maplibre.android.module.http.HttpRequestUtil
 import okhttp3.OkHttpClient
 import java.util.concurrent.Executors
 import kotlin.math.hypot
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.asin
+import kotlin.math.atan2
+import kotlin.math.sqrt
+import kotlin.math.PI
 
 /** No background tracking. A search shares the selected coordinates with public Overpass. */
 class MainActivity : Activity(), SensorEventListener {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var mapView: MapView
+    private lateinit var cellMonitor: CellMonitor
+    private var servingCell: ServingCell? = null
+    private var servingSite: TowerSite? = null
+    private var requestedCellId: String? = null
+    private var cellRequestAt = 0L
+    private var manualPoint: LatLng? = null
+    private lateinit var palette: KhakiPalette
+    private lateinit var settingsButton: Button
+    private lateinit var signalLabel: TextView
+    private lateinit var signalDetails: TextView
+    private lateinit var signalBars: LinearLayout
+    private lateinit var gpsRefresh: Button
+    private var showCone = true
+
     private lateinit var locationManager: LocationManager
     private lateinit var status: TextView
     private lateinit var radius: Spinner
@@ -125,9 +155,14 @@ class MainActivity : Activity(), SensorEventListener {
             point.altitude.toFloat(), System.currentTimeMillis()).declination
         val degrees = ((Math.toDegrees(orientation[0].toDouble()).toFloat() + declination) % 360f + 360f) % 360f
         val diff = kotlin.math.abs((degrees - headingDegrees + 540f) % 360f - 180f)
-        if (diff < 2f) return
+        if (diff < 4f) return
         headingDegrees = degrees
-        if (::headingView.isInitialized) headingView.text = "▲ " + degrees.toInt() + "°"
+        if (::headingView.isInitialized) {
+            val directions = arrayOf("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
+            val direction = directions[((degrees + 22.5f).toInt() / 45) % 8]
+            headingView.text = "➤ " + degrees.toInt() + "° " + direction
+        }
+        updateOverlays()
         (map?.style?.getLayer("phone-heading") as? SymbolLayer)
             ?.setProperties(PropertyFactory.iconRotate(degrees))
     }
@@ -136,7 +171,7 @@ class MainActivity : Activity(), SensorEventListener {
         val image = Bitmap.createBitmap(72, 72, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(image)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(17, 91, 224)
+            color = palette.olive
             style = Paint.Style.FILL
         }
         val triangle = Path().apply {
@@ -166,6 +201,27 @@ class MainActivity : Activity(), SensorEventListener {
         current.setStyle(MapSources.style(provider, key)) { style ->
             style.addSource(GeoJsonSource("towers", emptyFeatures()))
             style.addSource(GeoJsonSource("my-location", emptyFeatures()))
+            style.addSource(GeoJsonSource("gps-accuracy", emptyFeatures()))
+            style.addSource(GeoJsonSource("heading-cone", emptyFeatures()))
+            style.addSource(GeoJsonSource("cell-link", emptyFeatures()))
+            style.addSource(GeoJsonSource("serving-cell", emptyFeatures()))
+
+            style.addLayer(FillLayer("gps-accuracy-fill", "gps-accuracy").apply {
+                setProperties(PropertyFactory.fillColor(palette.olive), PropertyFactory.fillOpacity(0.10f))
+            })
+            style.addLayer(FillLayer("heading-cone-fill", "heading-cone").apply {
+                setProperties(PropertyFactory.fillColor(palette.olive), PropertyFactory.fillOpacity(0.24f))
+            })
+            style.addLayer(LineLayer("serving-line", "cell-link").apply {
+                setProperties(PropertyFactory.lineColor(Color.rgb(215, 141, 45)),
+                    PropertyFactory.lineWidth(3.3f),
+                    PropertyFactory.lineDasharray(arrayOf(2.4f, 2.0f)))
+            })
+            style.addLayer(CircleLayer("serving-cell-dot", "serving-cell").apply {
+                setProperties(PropertyFactory.circleColor(Color.rgb(215, 141, 45)),
+                    PropertyFactory.circleRadius(10f), PropertyFactory.circleStrokeColor(Color.WHITE),
+                    PropertyFactory.circleStrokeWidth(3f))
+            })
 
             style.addLayer(CircleLayer("potential-masts", "towers").apply {
                 setFilter(Expression.eq(Expression.get("mobile"), Expression.literal(false)))
@@ -179,7 +235,7 @@ class MainActivity : Activity(), SensorEventListener {
             style.addLayer(CircleLayer("mobile-masts", "towers").apply {
                 setFilter(Expression.eq(Expression.get("mobile"), Expression.literal(true)))
                 setProperties(
-                    PropertyFactory.circleColor(Color.rgb(37, 99, 235)),
+                    PropertyFactory.circleColor(palette.olive),
                     PropertyFactory.circleRadius(7f),
                     PropertyFactory.circleStrokeColor(Color.WHITE),
                     PropertyFactory.circleStrokeWidth(2f)
@@ -187,14 +243,14 @@ class MainActivity : Activity(), SensorEventListener {
             })
             style.addLayer(CircleLayer("location-halo", "my-location").apply {
                 setProperties(
-                    PropertyFactory.circleColor(Color.rgb(147, 197, 253)),
+                    PropertyFactory.circleColor(palette.olive),
                     PropertyFactory.circleRadius(16f),
                     PropertyFactory.circleOpacity(0.35f)
                 )
             })
             style.addLayer(CircleLayer("location-dot", "my-location").apply {
                 setProperties(
-                    PropertyFactory.circleColor(Color.rgb(29, 78, 216)),
+                    PropertyFactory.circleColor(palette.olive),
                     PropertyFactory.circleRadius(6f),
                     PropertyFactory.circleStrokeColor(Color.WHITE),
                     PropertyFactory.circleStrokeWidth(3f)
@@ -215,6 +271,7 @@ class MainActivity : Activity(), SensorEventListener {
             styled = true
             updateDot()
             showPins()
+            updateOverlays()
             if (!initiallyCentered) center?.let(::moveCamera)
         }
     }
@@ -796,11 +853,72 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun updateDot() {
-        val point = location ?: return
         if (!styled) return
-        val marker = Feature.fromGeometry(Point.fromLngLat(point.longitude, point.latitude))
-        (map?.style?.getSource("my-location") as? GeoJsonSource)
-            ?.setGeoJson(FeatureCollection.fromFeatures(arrayOf(marker)))
+        val point = manualPoint ?: location?.let { LatLng(it.latitude, it.longitude) }
+        val features = if (point == null) emptyFeatures() else FeatureCollection.fromFeatures(
+            arrayOf(Feature.fromGeometry(Point.fromLngLat(point.longitude, point.latitude)))
+        )
+        (map?.style?.getSource("my-location") as? GeoJsonSource)?.setGeoJson(features)
+        updateOverlays()
+    }
+
+    private fun geoPoint(lat: Double, lon: Double, meters: Double, bearing: Double): Point {
+        val latR = Math.toRadians(lat)
+        val lonR = Math.toRadians(lon)
+        val distance = meters / 6371008.8
+        val direction = Math.toRadians(bearing)
+        val lat2 = asin((sin(latR) * cos(distance) +
+            cos(latR) * sin(distance) * cos(direction)).coerceIn(-1.0, 1.0))
+        val lon2 = lonR + atan2(sin(direction) * sin(distance) * cos(latR),
+            cos(distance) - sin(latR) * sin(lat2))
+        return Point.fromLngLat(Math.toDegrees(lon2), Math.toDegrees(lat2))
+    }
+
+    private fun polygonAround(lat: Double, lon: Double, meters: Double,
+                              bearings: List<Double>): FeatureCollection {
+        if (bearings.size < 2) return emptyFeatures()
+        val coordinates = bearings.map { geoPoint(lat, lon, meters, it) }
+        val ring = coordinates + coordinates.first()
+        return FeatureCollection.fromFeatures(arrayOf(
+            Feature.fromGeometry(Polygon.fromLngLats(listOf(ring)))
+        ))
+    }
+
+    private fun updateOverlays() {
+        if (!styled) return
+        val point = manualPoint ?: location?.let { LatLng(it.latitude, it.longitude) }
+        val accurate = if (manualPoint == null) location?.takeIf {
+            it.hasAccuracy() && it.accuracy in 1f..1500f &&
+                System.currentTimeMillis() - it.time < 120000L
+        } else null
+        val accuracy = accurate?.let {
+            polygonAround(it.latitude, it.longitude, it.accuracy.toDouble(),
+                (0..36).map { index -> index * 10.0 })
+        } ?: emptyFeatures()
+        (map?.style?.getSource("gps-accuracy") as? GeoJsonSource)?.setGeoJson(accuracy)
+        val sector = if (showCone && point != null) {
+            val headings = (-35..35 step 5).map { headingDegrees.toDouble() + it }
+            val ring = listOf(Point.fromLngLat(point.longitude, point.latitude)) +
+                headings.map { geoPoint(point.latitude, point.longitude, 600.0, it) } +
+                Point.fromLngLat(point.longitude, point.latitude)
+            FeatureCollection.fromFeatures(arrayOf(
+                Feature.fromGeometry(Polygon.fromLngLats(listOf(ring)))
+            ))
+        } else emptyFeatures()
+        (map?.style?.getSource("heading-cone") as? GeoJsonSource)?.setGeoJson(sector)
+        val site = servingSite
+        val line = if (point == null || site == null) emptyFeatures() else
+            FeatureCollection.fromFeatures(arrayOf(Feature.fromGeometry(
+                LineString.fromLngLats(listOf(
+                    Point.fromLngLat(point.longitude, point.latitude),
+                    Point.fromLngLat(site.longitude, site.latitude)
+                ))
+            )))
+        (map?.style?.getSource("cell-link") as? GeoJsonSource)?.setGeoJson(line)
+        val cell = if (site == null) emptyFeatures() else FeatureCollection.fromFeatures(
+            arrayOf(Feature.fromGeometry(Point.fromLngLat(site.longitude, site.latitude)))
+        )
+        (map?.style?.getSource("serving-cell") as? GeoJsonSource)?.setGeoJson(cell)
     }
 
     private fun selectTower(tapped: LatLng) {
