@@ -1027,7 +1027,7 @@ class MainActivity : Activity(), SensorEventListener {
         rsrp?.let { "RSRP: " + it + " dBm" },
         rsrq?.let { "RSRQ: " + it + " dB" },
         sinr?.let { "SINR: " + String.format(Locale.US, "%.1f", it) + " dB" }
-    ).joinToString("\\n").ifBlank { "Точный уровень сигнала модем не сообщил" }
+    ).joinToString("\n").ifBlank { "Точный уровень сигнала модем не сообщил" }
 
     private fun radioExtra(reading: ServingCell): String = listOfNotNull(
         reading.pci?.let { "PCI / код физической соты: " + it },
@@ -1043,7 +1043,7 @@ class MainActivity : Activity(), SensorEventListener {
         },
         reading.bandwidthKhz?.let { "Ширина канала: " + it / 1000.0 + " МГц" },
         reading.timingAdvance?.let { "Timing Advance: " + it + " (не расстояние до вышки)" }
-    ).joinToString("\\n").ifBlank { "Дополнительные радиопараметры недоступны" }
+    ).joinToString("\n").ifBlank { "Дополнительные радиопараметры недоступны" }
 
     private fun showSignalDetails() {
         val reading = servingCell
@@ -1070,12 +1070,12 @@ class MainActivity : Activity(), SensorEventListener {
                                 site.latitude, site.longitude))
                     }
                 }
-            ).joinToString("\\n")
+            ).joinToString("\n")
         } else if (signal != null) {
             "Оператор: " + signal.operator.ifBlank { "не указан" } +
-                "\\nСеть: " + signal.network +
-                "\\n" + radioMetrics(signal.dbm, signal.rsrp, signal.rsrq, signal.sinr) +
-                "\\nCell ID / соседние соты: недоступны без геолокации или разрешения"
+                "\nСеть: " + signal.network +
+                "\n" + radioMetrics(signal.dbm, signal.rsrp, signal.rsrq, signal.sinr) +
+                "\nCell ID / соседние соты: недоступны без геолокации или разрешения"
         } else {
             "Нет измерений модема. Проверьте доступ к телефону, SIM и режим полёта. " +
                 "GPS для отображения мощности сети не требуется."
@@ -1159,7 +1159,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         val options = cells.map { c ->
             (c.network + " · " + (c.dbm?.let { it.toString() + " dBm" } ?: "нет dBm")) +
-                "\\nPCI " + (c.pci?.toString() ?: "—") +
+                "\nPCI " + (c.pci?.toString() ?: "—") +
                 " · " + (c.bands.firstOrNull()?.let { "B" + it } ?: "без диапазона")
         }.toTypedArray()
         KhakiDialogBuilder(this, palette).setTitle("Соседние соты · " + cells.size)
@@ -1182,7 +1182,7 @@ class MainActivity : Activity(), SensorEventListener {
             radioExtra(cell),
             if (match != null) "Координаты: оценка OpenCellID" else
                 "Координаты неизвестны — не подставляем ближайшую OSM-вышку"
-        ).joinToString("\\n")
+        ).joinToString("\n")
         KhakiDialogBuilder(this, palette).setTitle("Радиосота · подробности")
             .setMessage(message)
             .setPositiveButton(
@@ -1222,7 +1222,7 @@ class MainActivity : Activity(), SensorEventListener {
                     showPins()
                     KhakiDialogBuilder(this, palette).setTitle("Найдена оценка OpenCellID")
                         .setMessage(
-                            String.format(Locale.US, "Координаты: %.6f, %.6f\\n",
+                            String.format(Locale.US, "Координаты: %.6f, %.6f\n",
                                 site.latitude, site.longitude) +
                                 "Это примерная позиция радиосоты, не точное положение мачты."
                         )
@@ -2006,6 +2006,10 @@ class MainActivity : Activity(), SensorEventListener {
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     private fun askLocation() {
+        // Start signal independently whenever phone permission is already granted.
+        if (cellMonitor.hasSignalPermission()) {
+            cellMonitor.start(getPreferences(Context.MODE_PRIVATE).getInt("sim_id", -1))
+        }
         val permissions = listOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -2018,7 +2022,8 @@ class MainActivity : Activity(), SensorEventListener {
                     Manifest.permission.READ_PHONE_STATE)
             else permissions
             requestPermissions(requested.distinct().toTypedArray(), 101)
-            status.text = "Для точного GPS и информации о соте разрешите доступ к местоположению и телефону."
+            status.text = "Для GPS и идентификаторов сот нужно точное местоположение. " +
+                "Мониторинг сигнала работает отдельно."
         } else {
             startLocationUpdates()
             cellMonitor.start(getPreferences(Context.MODE_PRIVATE).getInt("sim_id", -1))
@@ -2257,10 +2262,10 @@ class MainActivity : Activity(), SensorEventListener {
         servingCell = reading
         if (reading == null) {
             refreshSignalDisplay()
-            cellStatus.text = if (cellMonitor.hasPermission())
+            cellStatus.text = if (cellMonitor.canReadCellDetails())
                 "Нет зарегистрированной соты или модем ограничил доступ."
             else if (!cellMonitor.hasSignalPermission()) "Разрешите доступ к телефону."
-                else "Cell ID скрыт: включите системную геолокацию и разрешите точное местоположение."
+            else "Cell ID скрыт: включите системную геолокацию для обнаружения сот."
             if (previousId != null) {
                 servingSite = null
                 updateOverlays()
@@ -2494,10 +2499,10 @@ class MainActivity : Activity(), SensorEventListener {
         if (requestCode == 101) {
             if (hasLocation()) startLocationUpdates()
             else status.text = "Геолокация запрещена. Можно искать в центре карты."
-            if (cellMonitor.hasPermission()) {
+            if (cellMonitor.hasSignalPermission()) {
                 cellMonitor.start(getPreferences(Context.MODE_PRIVATE).getInt("sim_id", -1))
             } else {
-                cellStatus.text = "Для определения обслуживающей соты нужны точная геопозиция и доступ к телефону."
+                cellStatus.text = "Для мониторинга сигнала нужен доступ к телефону."
             }
         }
     }
@@ -2521,7 +2526,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         headingSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         if (hasLocation()) startLocationUpdates()
-        if (cellMonitor.hasPermission()) {
+        if (cellMonitor.hasSignalPermission()) {
             cellMonitor.start(getPreferences(Context.MODE_PRIVATE).getInt("sim_id", -1))
         }
         if (MapSources.providers.getOrNull(providerIndex)?.id.orEmpty().startsWith("google-") &&
