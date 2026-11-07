@@ -567,19 +567,17 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun showSettings() {
         val items = arrayOf(
-            "Тема оформления: " + when(getPreferences(Context.MODE_PRIVATE)
+            "Тема оформления: " + when (getPreferences(Context.MODE_PRIVATE)
                 .getString("app_theme", KhakiTheme.SYSTEM)) {
                     KhakiTheme.DAY -> "Дневная"
                     KhakiTheme.NIGHT -> "Ночная"
                     else -> "Системная"
                 },
-            "Геопозиция: " + if (manualPoint == null) "Автоматическая" else "Ручная",
+            "Геопозиция: " + if (manualPoint == null) "Автоматическая GPS" else "Ручная точка",
             "SIM для отслеживания",
-            "Ключи Яндекс / 2ГИС",
-            "Открыть кабинет Яндекс ID",
-            "Дополнительные соты OpenCellID",
-            "Сектор направления: " + if (showCone) "Включён" else "Выключен",
-            "Контраст сектора: " + arrayOf("Обычный", "Яркий", "Максимальный")[sectorIntensity]
+            "Подключения API: Яндекс · 2ГИС · Google · OpenCellID",
+            "Индикатор направления: " + if (showCone) "Включён" else "Выключен",
+            "Яркость луча и сектора: раздельная настройка"
         )
         KhakiDialogBuilder(this, palette).setTitle("Настройки · TowerRadar")
             .setItems(items) { _, selected ->
@@ -587,44 +585,228 @@ class MainActivity : Activity(), SensorEventListener {
                     0 -> selectTheme()
                     1 -> showPositionOptions()
                     2 -> selectSim()
-                    3 -> KhakiDialogBuilder(this, palette).setTitle("Картографические ключи")
-                        .setItems(arrayOf("Яндекс Карты", "2ГИС")) { _, index ->
-                            if (index == 0) showYandexSetup()
-                            else requestMapKey(MapSources.providers.first { it.id == "2gis" })
-                        }.show()
-                    4 -> showYandexSetup()
-                    5 -> editCellKey()
-                    6 -> {
+                    3 -> showConnections()
+                    4 -> {
                         showCone = !showCone
                         getPreferences(Context.MODE_PRIVATE).edit()
                             .putBoolean("show_cone", showCone).apply()
                         updateOverlays()
                     }
-                    7 -> chooseSectorContrast()
+                    5 -> showDirectionBrightness()
                 }
             }.setNegativeButton("Закрыть", null).show()
     }
 
-    private fun chooseSectorContrast() {
-        KhakiDialogBuilder(this, palette).setTitle("Контраст направления")
-            .setMessage("Голубой сектор показывает, куда направлен верх телефона. " +
-                "Оранжевый пунктир обозначает позицию обслуживающей соты.")
-            .setSingleChoiceItems(arrayOf("Обычный", "Яркий · рекомендуется",
-                "Максимальный"), sectorIntensity) { _, selected ->
-                sectorIntensity = selected.coerceIn(0, 2)
-                getPreferences(Context.MODE_PRIVATE).edit()
-                    .putInt("sector_intensity", sectorIntensity).apply()
-                (map?.style?.getLayer("heading-cone-fill") as? FillLayer)?.setProperties(
-                    PropertyFactory.fillOpacity(sectorAlpha())
-                )
-                updateOverlays()
-            }.setNegativeButton("Отмена", null).show()
+    private fun sectorAlpha(): Float = 0.50f * sectorBrightness / 100f
+    private fun beamAlpha(): Float = beamBrightness / 100f
+
+    private fun updateDirectionStyle() {
+        (map?.style?.getLayer("heading-cone-fill") as? FillLayer)?.setProperties(
+            PropertyFactory.fillOpacity(sectorAlpha())
+        )
+        (map?.style?.getLayer("heading-near-fill") as? FillLayer)?.setProperties(
+            PropertyFactory.fillOpacity(sectorAlpha() * .38f)
+        )
+        for (name in listOf("heading-border-halo", "heading-border-color")) {
+            (map?.style?.getLayer(name) as? LineLayer)?.setProperties(
+                PropertyFactory.lineOpacity(sectorAlpha() * if (name.endsWith("halo")) .2f else .85f)
+            )
+        }
+        (map?.style?.getLayer("heading-center-halo") as? LineLayer)?.setProperties(
+            PropertyFactory.lineOpacity(beamAlpha() * .24f)
+        )
+        (map?.style?.getLayer("heading-center-color") as? LineLayer)?.setProperties(
+            PropertyFactory.lineOpacity(beamAlpha())
+        )
     }
 
-    private fun sectorAlpha(): Float = when (sectorIntensity) {
-        0 -> 0.27f
-        2 -> 0.64f
-        else -> 0.44f
+    private fun showDirectionBrightness() {
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        val help = text("Бирюзовый пунктир — азимут телефона. Мягкий сектор — зона направления. " +
+            "Каждый элемент можно сделать невидимым, установив 0%. " +
+            "Кольцо позиции останется.", 13f, palette.secondary).apply {
+            setPadding(dp(5), dp(5), dp(5), dp(12))
+        }
+        layout.addView(help)
+        fun addSlider(title: String, current: Int, onChanged: (Int) -> Unit) {
+            val header = row().apply { gravity = Gravity.CENTER_VERTICAL }
+            val name = text(title, 14f, palette.text).apply {
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
+            header.addView(name, LinearLayout.LayoutParams(0, -2, 1f))
+            val valueLabel = text("$current%", 14f, palette.olive)
+            header.addView(valueLabel)
+            layout.addView(header)
+            val slider = SeekBar(this).apply {
+                max = 100
+                progress = current
+                progressTintList = ColorStateList.valueOf(palette.olive)
+                thumbTintList = ColorStateList.valueOf(palette.olive)
+            }
+            slider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(view: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    valueLabel.text = "$progress%"
+                    onChanged(progress)
+                    updateDirectionStyle()
+                }
+                override fun onStartTrackingTouch(view: SeekBar?) = Unit
+                override fun onStopTrackingTouch(view: SeekBar?) = Unit
+            })
+            layout.addView(slider, LinearLayout.LayoutParams(-1, dp(58)))
+        }
+        addSlider("Яркость пунктирного луча", beamBrightness) {
+            beamBrightness = it
+            getPreferences(Context.MODE_PRIVATE).edit().putInt("beam_brightness", it).apply()
+        }
+        addSlider("Яркость сектора", sectorBrightness) {
+            sectorBrightness = it
+            getPreferences(Context.MODE_PRIVATE).edit().putInt("sector_brightness", it).apply()
+        }
+        KhakiDialogBuilder(this, palette).setTitle("Индикатор направления")
+            .setView(layout)
+            .setPositiveButton("Готово", null)
+            .show()
+    }
+
+    private fun connectionStatus(pref: String): String {
+        val stored = getPreferences(Context.MODE_PRIVATE).getString(pref, "").orEmpty()
+        if (stored.isBlank()) return "Нет ключа"
+        if (checkingApi.contains(pref)) return "⏳ Проверяем подключение…"
+        val check = apiChecks[pref] ?: return "Ключ сохранён · не проверен"
+        return if (check.connected) "✓ Подключено · сервер подтвердил"
+            else "⚠ " + check.message
+    }
+
+    private val connectionStatusViews = mutableMapOf<String, TextView>()
+
+    private fun redrawConnectionStatuses() {
+        for ((pref, view) in connectionStatusViews) {
+            val status = connectionStatus(pref)
+            view.text = status
+            view.setTextColor(when {
+                status.startsWith("✓") -> Color.rgb(91, 184, 113)
+                status.startsWith("⚠") -> Color.rgb(214, 158, 87)
+                else -> palette.secondary
+            })
+        }
+    }
+
+    private fun showConnections() {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+        }
+        panel.addView(text("Галочка означает, что сервер ответил и проверка ключа прошла. " +
+            "Один только ввод ключа не считается подключением.", 13f, palette.secondary).apply {
+            setPadding(dp(6), dp(4), dp(6), dp(12))
+        })
+        val connections = listOf(
+            Triple("map_key_yandex", "Яндекс Карты", "Tiles API"),
+            Triple("map_key_2gis", "2ГИС", "Raster Tiles API"),
+            Triple("map_key_google", "Google Maps", "Map Tiles API · 3 вида карты"),
+            Triple("opencellid_key", "OpenCellID", "Данные о сотах")
+        )
+        connectionStatusViews.clear()
+        connections.forEach { (pref, title, subtitle) ->
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = rounded(palette.elevated, 12)
+                setPadding(dp(12), dp(9), dp(12), dp(9))
+                isClickable = true
+                isFocusable = true
+            }
+            cell.addView(text("$title  ›", 15f, palette.text).apply {
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            })
+            cell.addView(text(subtitle, 11f, palette.secondary).apply {
+                setPadding(0, dp(2), 0, dp(2))
+            })
+            val status = text("", 12f, palette.secondary)
+            connectionStatusViews[pref] = status
+            cell.addView(status)
+            cell.setOnClickListener {
+                when (pref) {
+                    "map_key_yandex" -> showYandexSetup()
+                    "map_key_2gis" -> requestMapKey(
+                        MapSources.providers.first { it.id == "2gis" })
+                    "map_key_google" -> showGoogleSetup()
+                    else -> editCellKey()
+                }
+            }
+            panel.addView(cell, LinearLayout.LayoutParams(-1, -2).apply {
+                bottomMargin = dp(7)
+            })
+        }
+        val retry = styledButton("↻  Проверить все подключения", 13f)
+        panel.addView(retry, LinearLayout.LayoutParams(-1, dp(46)))
+        retry.setOnClickListener { verifySavedConnections() }
+        redrawConnectionStatuses()
+        KhakiDialogBuilder(this, palette).setTitle("Подключения API")
+            .setView(panel).setPositiveButton("Закрыть", null).show()
+    }
+
+    private fun showGoogleSetup() {
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Google Карты · подключение")
+            .setMessage("Для обычной, спутниковой и гибридной карты нужен ключ именно Google " +
+                "Map Tiles API. В Google Cloud необходимо включить Map Tiles API и оплату " +
+                "(Billing). Это не ключ Maps SDK for Android. Ключ хранится только на телефоне; " +
+                "запросы выполняются напрямую к Google.")
+            .setItems(arrayOf("Ввести или заменить API-ключ",
+                "Проверить подключение", "Открыть Google Cloud")) { _, selected ->
+                when (selected) {
+                    0 -> requestMapKey(MapSources.providers.first { it.id == "google-road" })
+                    1 -> verifyConnection("map_key_google")
+                    2 -> try {
+                        startActivity(Intent(Intent.ACTION_VIEW,
+                            Uri.parse("https://console.cloud.google.com/google/maps-apis/credentials")))
+                    } catch (_: Exception) {
+                        Toast.makeText(this, "Не удалось открыть браузер", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            .setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun verifySavedConnections() {
+        for (pref in listOf("map_key_yandex", "map_key_2gis",
+            "map_key_google", "opencellid_key")) {
+            verifyConnection(pref)
+        }
+    }
+
+    private fun verifyConnection(pref: String) {
+        val key = getPreferences(Context.MODE_PRIVATE).getString(pref, "").orEmpty()
+        if (key.isBlank()) {
+            apiChecks.remove(pref)
+            checkingApi.remove(pref)
+            redrawConnectionStatuses()
+            return
+        }
+        if (!checkingApi.add(pref)) return
+        redrawConnectionStatuses()
+        val where = activeUserPoint() ?: center ?: LatLng(55.75, 37.62)
+        executor.execute {
+            val result = if (pref == "opencellid_key")
+                ApiConnections.checkOpenCell(key, where.latitude, where.longitude)
+            else {
+                val provider = MapSources.providers.first { it.keyPref == pref }
+                ApiConnections.checkMap(provider, where.latitude, where.longitude, key)
+            }
+            runOnUiThread {
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                if (getPreferences(Context.MODE_PRIVATE).getString(pref, "") == key) {
+                    apiChecks[pref] = result
+                    result.session?.let { googleSessions["google-road"] = it }
+                }
+                checkingApi.remove(pref)
+                redrawConnectionStatuses()
+            }
+        }
     }
 
     private fun selectTheme() {
