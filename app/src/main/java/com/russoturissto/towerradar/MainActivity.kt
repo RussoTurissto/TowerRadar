@@ -123,6 +123,9 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var gpsLabel: TextView
     private lateinit var cellMonitor: CellMonitor
     private var servingCell: ServingCell? = null
+    private var radioSignal: RadioSignal? = null
+    private var nearbyCells: List<ServingCell> = emptyList()
+    private lateinit var neighborsButton: Button
     private var servingSite: TowerSite? = null
     private var requestedCellId: String? = null
     private var cellRequestAt = 0L
@@ -921,9 +924,10 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun selectSim() {
-        if (!cellMonitor.hasPermission()) {
+        if (!cellMonitor.hasSignalPermission()) {
             KhakiDialogBuilder(this, palette).setTitle("Доступ к SIM")
-                .setMessage("Чтобы определить активную соту и уровень сигнала, нужен доступ к телефону и точному местоположению.")
+                .setMessage("Для выбора SIM и измерения сигнала нужен доступ к телефону. " +
+                    "Точная геопозиция нужна только для Cell ID и соседних сот.")
                 .setPositiveButton("Разрешить") { _, _ -> askLocation() }
                 .setNegativeButton("Отмена", null).show()
             return
@@ -1016,38 +1020,245 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun radioMetrics(
+        dbm: Int?, rsrp: Int?, rsrq: Int?, sinr: Float?
+    ): String = listOfNotNull(
+        dbm?.let { "Мощность: " + it + " dBm" },
+        rsrp?.let { "RSRP: " + it + " dBm" },
+        rsrq?.let { "RSRQ: " + it + " dB" },
+        sinr?.let { "SINR: " + String.format(Locale.US, "%.1f", it) + " dB" }
+    ).joinToString("\\n").ifBlank { "Точный уровень сигнала модем не сообщил" }
+
+    private fun radioExtra(reading: ServingCell): String = listOfNotNull(
+        reading.pci?.let { "PCI / код физической соты: " + it },
+        reading.channel?.let {
+            (if (reading.network == "NR") "NRARFCN"
+                else if (reading.network == "LTE") "EARFCN"
+                else "Номер радиоканала") + ": " + it
+        },
+        reading.bands.takeIf { it.isNotEmpty() }?.let {
+            "Диапазоны: " + it.joinToString(", ") { band ->
+                (if (reading.network == "NR") "n" else "B") + band
+            }
+        },
+        reading.bandwidthKhz?.let { "Ширина канала: " + it / 1000.0 + " МГц" },
+        reading.timingAdvance?.let { "Timing Advance: " + it + " (не расстояние до вышки)" }
+    ).joinToString("\\n").ifBlank { "Дополнительные радиопараметры недоступны" }
+
     private fun showSignalDetails() {
         val reading = servingCell
-        val description = if (reading == null) {
-            "Данные обслуживающей соты недоступны. Разрешите точную геопозицию и доступ к телефону."
-        } else {
-            val metrics = listOfNotNull(
-                "Оператор: " + (reading.operator.ifBlank { "не указан" }),
+        val signal = radioSignal?.takeIf {
+            SystemClock.elapsedRealtime() - it.measuredAt < 60000L
+        }
+        val intro = if (reading != null) {
+            listOfNotNull(
+                "Оператор: " + reading.operator.ifBlank { "не указан" },
                 "Сеть: " + reading.network,
-                "Сигнал: " + (reading.dbm?.toString()?.plus(" dBm") ?: "нет данных"),
-                reading.rsrp?.let { "RSRP: $it dBm" },
-                reading.rsrq?.let { "RSRQ: $it dB" },
-                reading.sinr?.let { "SINR: $it dB" },
-                "MCC: " + reading.mcc + " / MNC: " + reading.mnc,
-                "TAC/LAC: " + reading.area,
+                radioMetrics(reading.dbm, reading.rsrp, reading.rsrq, reading.sinr),
+                "MCC: " + reading.mcc + " · MNC: " + reading.mnc,
+                "TAC / LAC: " + reading.area,
                 "Cell ID: " + reading.cellId,
                 "SIM ID: " + reading.subId,
-                if (servingSite == null) "Координаты обслуживающей соты неизвестны"
-                else "Маркер на карте: приблизительная позиция OpenCellID",
+                radioExtra(reading),
+                if (servingSite == null) "Положение соты не найдено; это не ближайшая OSM-вышка"
+                else "OpenCellID: примерная координата радиосоты",
                 servingSite?.let { site ->
-                    activeUserPoint()?.let { source ->
-                        val origin = if (manualPoint != null) "ручной точки" else "GPS"
-                        "Расстояние от " + origin + ": " +
-                            String.format(Locale.US, "%.2f км",
-                                TowerData.distanceKm(source.latitude, source.longitude,
-                                    site.latitude, site.longitude))
+                    activeUserPoint()?.let { point ->
+                        "Расстояние от " + (if (manualPoint != null) "ручной точки" else "GPS") +
+                            ": " + String.format(Locale.US, "%.2f км",
+                            TowerData.distanceKm(point.latitude, point.longitude,
+                                site.latitude, site.longitude))
                     }
                 }
-            )
-            metrics.joinToString("\n")
+            ).joinToString("\\n")
+        } else if (signal != null) {
+            "Оператор: " + signal.operator.ifBlank { "не указан" } +
+                "\\nСеть: " + signal.network +
+                "\\n" + radioMetrics(signal.dbm, signal.rsrp, signal.rsrq, signal.sinr) +
+                "\\nCell ID / соседние соты: недоступны без геолокации или разрешения"
+        } else {
+            "Нет измерений модема. Проверьте доступ к телефону, SIM и режим полёта. " +
+                "GPS для отображения мощности сети не требуется."
         }
         KhakiDialogBuilder(this, palette).setTitle("Подключённая сеть")
-            .setMessage(description).setPositiveButton("Закрыть", null).show()
+            .setMessage(intro)
+            .setPositiveButton("Соседние соты") { _, _ -> showNeighborCells() }
+            .setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun updateRadioSignal(signal: RadioSignal) {
+        radioSignal = signal
+        refreshSignalDisplay()
+    }
+
+    private fun refreshSignalDisplay() {
+        if (!::signalLabel.isInitialized) return
+        val radio = radioSignal?.takeIf {
+            SystemClock.elapsedRealtime() - it.measuredAt in 0..60000L
+        }
+        val cell = servingCell
+        if (radio == null && cell == null) {
+            signalLabel.text = if (cellMonitor.hasSignalPermission())
+                "Сеть: ожидаем сигнал модема" else "Сеть: разрешите доступ к телефону"
+            signalDetails.text = "Нет измерения"
+            showSignalBars(0)
+            return
+        }
+        val operator = cell?.operator?.takeIf { it.isNotBlank() }
+            ?: radio?.operator?.takeIf { it.isNotBlank() } ?: "Мобильная сеть"
+        val network = cell?.network?.let { when (it) {
+            "NR" -> "5G NR"
+            "LTE" -> "4G LTE"
+            "UMTS" -> "3G"
+            "GSM" -> "2G"
+            else -> it
+        } } ?: radio?.network.orEmpty()
+        signalLabel.text = operator + if (network.isBlank()) "" else " · " + network
+        val dbm = cell?.dbm ?: radio?.dbm
+        val rsrp = cell?.rsrp ?: radio?.rsrp
+        val rsrq = cell?.rsrq ?: radio?.rsrq
+        val sinr = cell?.sinr ?: radio?.sinr
+        signalDetails.text = listOfNotNull(
+            dbm?.let { it.toString() + " dBm" },
+            rsrp?.let { "RSRP " + it + " dBm" },
+            rsrq?.let { "RSRQ " + it + " dB" },
+            sinr?.let { "SINR " + String.format(Locale.US, "%.1f", it) + " dB" }
+        ).joinToString(" · ").ifBlank { "Модем не сообщает мощность" }
+        val level = (cell?.level ?: radio?.level ?: 0).coerceIn(0, 4)
+        showSignalBars(level + 1)
+        signalLabel.contentDescription = "Сеть " + network + ", уровень " +
+            (level + 1) + " из 5; " + signalDetails.text
+    }
+
+    private fun updateNeighborCells(cells: List<ServingCell>) {
+        nearbyCells = cells
+        if (::neighborsButton.isInitialized) {
+            neighborsButton.text = "Соседние соты · " + cells.size +
+                (if (!cellMonitor.canReadCellDetails()) " · нужен GPS" else "")
+        }
+    }
+
+    private fun showNeighborCells() {
+        val cells = nearbyCells
+        if (!cellMonitor.canReadCellDetails()) {
+            KhakiDialogBuilder(this, palette).setTitle("Соседние соты")
+                .setMessage("Android скрывает идентификаторы соседних сот, когда " +
+                    "выключена системная геолокация или нет разрешения на точную позицию. " +
+                    "Мощность основной сети при этом продолжаем показывать отдельно. " +
+                    "Включите геолокацию для расширенного сканирования.")
+                .setPositiveButton("Закрыть", null).show()
+            return
+        }
+        if (cells.isEmpty()) {
+            KhakiDialogBuilder(this, palette).setTitle("Соседние соты")
+                .setMessage("Модем не выдал соседние соты. На некоторых телефонах " +
+                    "и сетях Android возвращает только обслуживающую соту.")
+                .setPositiveButton("Обновить") { _, _ -> cellMonitor.refresh() }
+                .setNegativeButton("Закрыть", null).show()
+            return
+        }
+        val options = cells.map { c ->
+            (c.network + " · " + (c.dbm?.let { it.toString() + " dBm" } ?: "нет dBm")) +
+                "\\nPCI " + (c.pci?.toString() ?: "—") +
+                " · " + (c.bands.firstOrNull()?.let { "B" + it } ?: "без диапазона")
+        }.toTypedArray()
+        KhakiDialogBuilder(this, palette).setTitle("Соседние соты · " + cells.size)
+            .setMessage("Обнаружены модемом. Не каждая радиосота имеет известные координаты.")
+            .setItems(options) { _, index -> showNeighborInfo(cells[index]) }
+            .setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun showNeighborInfo(cell: ServingCell) {
+        val match = sites.firstOrNull {
+            it.id == "opencellid/" + cell.identity
+        }
+        val message = listOf(
+            (if (cell.registered) "Обслуживающая" else "Соседняя") + " · " + cell.network,
+            "Оператор: " + cell.operator.ifBlank { "не указан" },
+            "MCC/MNC: " + cell.mcc + "/" + cell.mnc,
+            "TAC/LAC: " + cell.area,
+            "Cell ID: " + (if (cell.validId) cell.cellId.toString() else "не предоставлен"),
+            radioMetrics(cell.dbm, cell.rsrp, cell.rsrq, cell.sinr),
+            radioExtra(cell),
+            if (match != null) "Координаты: оценка OpenCellID" else
+                "Координаты неизвестны — не подставляем ближайшую OSM-вышку"
+        ).joinToString("\\n")
+        KhakiDialogBuilder(this, palette).setTitle("Радиосота · подробности")
+            .setMessage(message)
+            .setPositiveButton(
+                if (match != null) "На карте" else "Искать в OpenCellID"
+            ) { _, _ ->
+                if (match != null) {
+                    map?.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                        LatLng(match.latitude, match.longitude), 14.0), 400)
+                    expandSheet(false)
+                } else lookupNeighbor(cell)
+            }
+            .setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun lookupNeighbor(cell: ServingCell) {
+        val key = getPreferences(Context.MODE_PRIVATE)
+            .getString("opencellid_key", "").orEmpty()
+        if (key.isBlank() || !cell.validId) {
+            KhakiDialogBuilder(this, palette).setTitle("Поиск координат")
+                .setMessage(if (key.isBlank()) "Сначала добавьте ключ OpenCellID в настройках."
+                    else "Модем не сообщил полный идентификатор соты. Точный поиск невозможен.")
+                .setPositiveButton("Закрыть", null).show()
+            return
+        }
+        Toast.makeText(this, "Поиск точного Cell ID в OpenCellID…", Toast.LENGTH_SHORT).show()
+        cellExecutor.execute {
+            val site = CellSources.lookup(key, cell)
+            runOnUiThread {
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                if (site == null) {
+                    KhakiDialogBuilder(this, palette).setTitle("Сота не найдена")
+                        .setMessage("В OpenCellID нет подходящей записи. " +
+                            "Не выбираем ближайшую вышку без подтверждения.")
+                        .setPositiveButton("Закрыть", null).show()
+                } else {
+                    sites = (sites + site).distinctBy { it.id }
+                    showPins()
+                    KhakiDialogBuilder(this, palette).setTitle("Найдена оценка OpenCellID")
+                        .setMessage(
+                            String.format(Locale.US, "Координаты: %.6f, %.6f\\n",
+                                site.latitude, site.longitude) +
+                                "Это примерная позиция радиосоты, не точное положение мачты."
+                        )
+                        .setPositiveButton("На карте") { _, _ ->
+                            map?.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                                LatLng(site.latitude, site.longitude), 14.0), 400)
+                            expandSheet(false)
+                        }.setNegativeButton("Закрыть", null).show()
+                }
+            }
+        }
+    }
+
+    private fun showAntennaRegistries() {
+        val names = arrayOf(
+            "Нидерланды · Antenneregister",
+            "Франция · Cartoradio (ANFR)",
+            "Германия · Bundesnetzagentur EMF"
+        )
+        val addresses = arrayOf(
+            "https://antenneregister.nl/",
+            "https://www.cartoradio.fr/",
+            "https://www.bundesnetzagentur.de/DE/Fachthemen/Telekommunikation/Technik/EMF/EMF-Datenportal/emf_datenportal_node.html"
+        )
+        KhakiDialogBuilder(this, palette).setTitle("Официальные реестры")
+            .setMessage("Открываются только официальные сайты в браузере. " +
+                "Доступ к выгрузкам и лицензиям различается. " +
+                "Запись в реестре подтверждает площадку, но не то, " +
+                "что телефон подключён именно к ней.")
+            .setItems(names) { _, i ->
+                try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(addresses[i]))) }
+                catch (_: Exception) {
+                    Toast.makeText(this, "Не удалось открыть браузер", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Закрыть", null).show()
     }
 
     private fun editCellKey() {
@@ -1134,7 +1345,11 @@ class MainActivity : Activity(), SensorEventListener {
         headingSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         locationFusion = LocationFusion(this, ::showLocation)
-        cellMonitor = CellMonitor(this) { updated -> updateServingCell(updated) }
+        cellMonitor = CellMonitor(this,
+            listener = ::updateServingCell,
+            signalListener = ::updateRadioSignal,
+            neighborsListener = ::updateNeighborCells
+        )
         createScreen()
         mapView.onCreate(state)
         mapView.getMapAsync { ready ->
@@ -1471,6 +1686,16 @@ class MainActivity : Activity(), SensorEventListener {
         cellActions.addView(keyButton, LinearLayout.LayoutParams(0, dp(43), 1f))
         simButton.setOnClickListener { selectSim() }
         keyButton.setOnClickListener { editCellKey() }
+        neighborsButton = styledButton("Соседние соты · сканер", 12f)
+        controls.addView(neighborsButton, LinearLayout.LayoutParams(-1, dp(43)).apply {
+            topMargin = dp(7)
+        })
+        neighborsButton.setOnClickListener { showNeighborCells() }
+        val registriesButton = styledButton("Реестры антенн · официальные источники", 12f)
+        controls.addView(registriesButton, LinearLayout.LayoutParams(-1, dp(43)).apply {
+            topMargin = dp(6)
+        })
+        registriesButton.setOnClickListener { showAntennaRegistries() }
 
         controls.addView(sectionTitle("ДОПОЛНИТЕЛЬНО"))
         val settingsControl = styledButton("Открыть настройки · оформление / компас", 12f)
@@ -2031,46 +2256,22 @@ class MainActivity : Activity(), SensorEventListener {
         val previousId = servingCell?.identity
         servingCell = reading
         if (reading == null) {
-            signalLabel.text = "Сеть: данные соты недоступны"
-            signalDetails.text = "Нет измерения уровня сигнала"
+            refreshSignalDisplay()
             cellStatus.text = if (cellMonitor.hasPermission())
                 "Нет зарегистрированной соты или модем ограничил доступ."
-            else "Разрешите точную геопозицию и доступ к телефону."
+            else if (!cellMonitor.hasSignalPermission()) "Разрешите доступ к телефону."
+                else "Cell ID скрыт: включите системную геолокацию и разрешите точное местоположение."
             if (previousId != null) {
                 servingSite = null
                 updateOverlays()
             }
-            showSignalBars(0)
             return
         }
         if (reading.identity != previousId) {
             servingSite = null
             updateOverlays()
         }
-        signalLabel.text = (if (reading.operator.isBlank()) "Мобильная сеть" else reading.operator) +
-            " · " + when (reading.network) {
-                "LTE" -> "4G LTE"
-                "NR" -> "5G NR"
-                "UMTS" -> "3G"
-                else -> reading.network
-            }
-        val values = listOfNotNull(
-            reading.dbm?.let { "$it dBm" },
-            reading.rsrp?.let { "RSRP $it dBm" },
-            reading.rsrq?.let { "RSRQ $it dB" },
-            reading.sinr?.let { "SINR " + String.format(Locale.US, "%.1f", it) + " dB" }
-        )
-        signalDetails.text = if (values.isEmpty()) "Модем не передал мощность сигнала"
-        else values.joinToString(" · ")
-        val quality = when (reading.level.coerceIn(0, 4)) {
-            0 -> "Очень слабый"
-            1 -> "Слабый"
-            2 -> "Средний"
-            3 -> "Хороший"
-            else -> "Отличный"
-        }
-        signalLabel.contentDescription = quality + " уровень сигнала; " + signalDetails.text
-        showSignalBars(reading.level + 1)
+        refreshSignalDisplay()
         if (!reading.validId) {
             cellStatus.text = "Сота зарегистрирована, но её идентификатор не раскрыт устройством."
             return
