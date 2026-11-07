@@ -315,12 +315,25 @@ class MainActivity : Activity(), SensorEventListener {
                 )
             })
             style.addLayer(CircleLayer("mobile-masts", "towers").apply {
-                setFilter(Expression.eq(Expression.get("mobile"), Expression.literal(true)))
+                setFilter(Expression.all(
+                    Expression.eq(Expression.get("mobile"), Expression.literal(true)),
+                    Expression.eq(Expression.get("estimated"), Expression.literal(false))
+                ))
                 setProperties(
                     PropertyFactory.circleColor(palette.olive),
                     PropertyFactory.circleRadius(7f),
                     PropertyFactory.circleStrokeColor(Color.WHITE),
                     PropertyFactory.circleStrokeWidth(2f)
+                )
+            })
+            style.addLayer(CircleLayer("estimated-cell-positions", "towers").apply {
+                setFilter(Expression.eq(Expression.get("estimated"), Expression.literal(true)))
+                setProperties(
+                    PropertyFactory.circleColor(Color.rgb(35, 171, 192)),
+                    PropertyFactory.circleOpacity(0.65f),
+                    PropertyFactory.circleRadius(7f),
+                    PropertyFactory.circleStrokeColor(Color.rgb(2, 83, 99)),
+                    PropertyFactory.circleStrokeWidth(2.5f)
                 )
             })
             style.addLayer(CircleLayer("location-halo", "my-location").apply {
@@ -2345,6 +2358,7 @@ class MainActivity : Activity(), SensorEventListener {
         val features = visible.map { site ->
             Feature.fromGeometry(Point.fromLngLat(site.longitude, site.latitude)).apply {
                 addBooleanProperty("mobile", site.mobile)
+                addBooleanProperty("estimated", site.id.startsWith("opencellid/"))
             }
         }
         (map?.style?.getSource("towers") as? GeoJsonSource)
@@ -2482,13 +2496,20 @@ class MainActivity : Activity(), SensorEventListener {
         } ?: "неизвестно"
         detailBody.text = listOfNotNull(
             "Оператор: " + (nearest.operator ?: "не указан"),
-            if (nearest.mobile) "Сотовая связь отмечена в OSM" else "Назначение вышки не подтверждено",
+            if (nearest.id.startsWith("opencellid/"))
+                "Примерная позиция радиосоты OpenCellID · НЕ координата физической мачты"
+            else if (nearest.mobile) "Объект связи из OpenStreetMap (OSM)"
+            else "Назначение вышки не подтверждено",
             nearest.technology?.let { "Технологии: " + it },
             nearest.height?.let { "Высота: " + it },
+            nearest.samples?.let { "Наблюдений в базе: " + it },
+            nearest.estimatedRangeMeters?.let { "Оценочный радиус: " + it + " м" },
+            nearest.averageSignalDbm?.let { "Средний сигнал наблюдений: " + it + " dBm" },
+            nearest.extraInfo?.let { "Дополнительные сведения: " + it },
             "Расстояние: " + distance +
                 (if (manualPoint != null) " · от ручной точки" else " · от GPS"),
             String.format(Locale.US, "Координаты: %.6f, %.6f", nearest.latitude, nearest.longitude),
-            "База: " + nearest.source,
+            "Источник / достоверность: " + nearest.source,
             "Источник: " + nearest.url
         ).joinToString("\n")
         details.visibility = View.VISIBLE
