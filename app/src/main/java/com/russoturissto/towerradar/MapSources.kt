@@ -33,7 +33,7 @@ object MapSources {
             "https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
             "© OpenStreetMap contributors · HOT"),
         MapProvider("yandex", "Яндекс Карты · русский",
-            "https://tiles.api-maps.yandex.ru/v1/tiles/?x={x}&y={y}&z={z}&l=map&lang=ru_RU&projection=web_mercator&apikey={api_key}",
+            "https://tiles.api-maps.yandex.ru/v1/tiles/?x={x}&y={y}&z={z}&l=map&lang=ru_RU&projection=web_mercator&scale=2&apikey={api_key}",
             "© Яндекс Карты", "map_key_yandex"),
         MapProvider("2gis", "2ГИС · русский",
             "https://tile0.maps.2gis.com/v2/tiles/online_sd/{z}/{x}/{y}.png?key={api_key}",
@@ -70,7 +70,7 @@ object MapSources {
             else -> 19f
         })
         return Style.Builder()
-            .withSource(RasterSource("basemap-source", tileSet))
+            .withSource(RasterSource("basemap-source", tileSet, 256))
             .withLayer(RasterLayer("basemap-layer", "basemap-source"))
     }
 
