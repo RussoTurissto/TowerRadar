@@ -3,10 +3,20 @@ package com.russoturissto.towerradar
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.drawable.GradientDrawable
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.hardware.GeomagneticField
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -16,6 +26,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.Spinner
@@ -26,6 +37,7 @@ import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.PropertyFactory
@@ -40,11 +52,13 @@ import java.net.URL
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import org.maplibre.android.module.http.HttpRequestUtil
+import okhttp3.OkHttpClient
 import java.util.concurrent.Executors
 import kotlin.math.hypot
 
 /** No background tracking. A search shares the selected coordinates with public Overpass. */
-class MainActivity : Activity() {
+class MainActivity : Activity(), SensorEventListener {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var mapView: MapView
     private lateinit var locationManager: LocationManager
@@ -54,6 +68,15 @@ class MainActivity : Activity() {
     private lateinit var refresh: Button
     private lateinit var locate: Button
     private lateinit var searchHere: Button
+    private lateinit var sourceButton: Button
+    private lateinit var keyButton: Button
+    private lateinit var headingView: TextView
+    private lateinit var mapStatus: TextView
+    private lateinit var sensorManager: SensorManager
+    private var headingSensor: Sensor? = null
+    private var headingDegrees = 0f
+    private var providerIndex = 0
+    private var choosingMap = false
     private lateinit var details: LinearLayout
     private lateinit var detailTitle: TextView
     private lateinit var detailBody: TextView
@@ -83,16 +106,57 @@ class MainActivity : Activity() {
         override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
     }
 
-    override fun onCreate(state: Bundle?) {
-        super.onCreate(state)
-        MapLibre.getInstance(this)
-        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        createScreen()
-        mapView.onCreate(state)
-        mapView.getMapAsync { ready ->
-            map = ready
-            ready.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(20.0, 0.0), 2.5))
-            ready.setStyle("https://tiles.openfreemap.org/styles/liberty") { style ->
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    override fun onSensorChanged(event: SensorEvent) {
+        if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
+        val rotation = FloatArray(9)
+        val orientation = FloatArray(3)
+        SensorManager.getRotationMatrixFromVector(rotation, event.values)
+        SensorManager.getOrientation(rotation, orientation)
+        val point = location
+        val declination = if (point == null) 0f else GeomagneticField(
+            point.latitude.toFloat(), point.longitude.toFloat(),
+            point.altitude.toFloat(), System.currentTimeMillis()).declination
+        val degrees = ((Math.toDegrees(orientation[0].toDouble()).toFloat() + declination) % 360f + 360f) % 360f
+        val diff = kotlin.math.abs((degrees - headingDegrees + 540f) % 360f - 180f)
+        if (diff < 2f) return
+        headingDegrees = degrees
+        if (::headingView.isInitialized) headingView.text = "▲ " + degrees.toInt() + "°"
+        (map?.style?.getLayer("phone-heading") as? SymbolLayer)
+            ?.setProperties(PropertyFactory.iconRotate(degrees))
+    }
+
+    private fun headingIcon(): Bitmap {
+        val image = Bitmap.createBitmap(72, 72, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(image)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(17, 91, 224)
+            style = Paint.Style.FILL
+        }
+        val triangle = Path().apply {
+            moveTo(36f, 4f)
+            lineTo(12f, 60f)
+            lineTo(36f, 48f)
+            lineTo(60f, 60f)
+            close()
+        }
+        canvas.drawPath(triangle, paint)
+        paint.color = Color.WHITE
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = 3f
+        canvas.drawPath(triangle, paint)
+        return image
+    }
+
+    private fun applyBasemap(provider: MapProvider) {
+        val current = map ?: return
+        styled = false
+        providerIndex = MapSources.providers.indexOf(provider).coerceAtLeast(0)
+        if (::sourceButton.isInitialized) sourceButton.text = "Карта: " + provider.name
+        if (::mapStatus.isInitialized) mapStatus.text = "Подложка: " + provider.attribution
+            current.setStyle(MapSources.style(provider)) { style ->
                 style.addSource(GeoJsonSource("towers", emptyFeatures()))
                 style.addSource(GeoJsonSource("my-location", emptyFeatures()))
 
@@ -129,11 +193,119 @@ class MainActivity : Activity() {
                         PropertyFactory.circleStrokeWidth(3f)
                     )
                 })
+
+                style.addImage("phone-direction", headingIcon())
+                style.addLayer(SymbolLayer("phone-heading", "my-location").apply {
+                    setProperties(
+                        PropertyFactory.iconImage("phone-direction"),
+                        PropertyFactory.iconRotate(headingDegrees),
+                        PropertyFactory.iconSize(0.62f),
+                        PropertyFactory.iconAllowOverlap(true),
+                        PropertyFactory.iconIgnorePlacement(true),
+                        PropertyFactory.iconRotationAlignment("map")
+                    )
+                })
                 styled = true
                 updateDot()
                 showPins()
                 if (!initiallyCentered) center?.let(::moveCamera)
             }
+    }
+
+
+    /** Select a reachable raster tile host using a single low-zoom tile request. */
+    private fun chooseBasemap() {
+        if (choosingMap) return
+        choosingMap = true
+        val point = location?.let { LatLng(it.latitude, it.longitude) }
+            ?: center ?: LatLng(49.0, 39.0)
+        executor.execute {
+            val selected = MapSources.providers.indexOfFirst {
+                MapSources.reachable(it, point.latitude, point.longitude)
+            }
+            runOnUiThread {
+                choosingMap = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (selected >= 0) {
+                    if (selected != providerIndex) applyBasemap(MapSources.providers[selected])
+                    mapStatus.text = "Подложка: " + MapSources.providers[selected].attribution
+                } else mapStatus.text = "Серверы карты не отвечают. Нажмите «Карта» для повторной проверки."
+            }
+        }
+    }
+
+    private fun nextBasemap() {
+        val point = location?.let { LatLng(it.latitude, it.longitude) }
+            ?: center ?: LatLng(49.0, 39.0)
+        if (choosingMap) return
+        choosingMap = true
+        mapStatus.text = "Проверяем другой сервер карты…"
+        val start = (providerIndex + 1) % MapSources.providers.size
+        executor.execute {
+            var candidate = -1
+            for (offset in MapSources.providers.indices) {
+                val index = (start + offset) % MapSources.providers.size
+                if (MapSources.reachable(MapSources.providers[index], point.latitude, point.longitude)) {
+                    candidate = index
+                    break
+                }
+            }
+            runOnUiThread {
+                choosingMap = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (candidate >= 0) applyBasemap(MapSources.providers[candidate])
+                else mapStatus.text = "Ни один сервер карты пока недоступен без VPN."
+            }
+        }
+    }
+
+    private fun editCellKey() {
+        val field = EditText(this).apply {
+            hint = "Ключ OpenCellID"
+            setSingleLine(true)
+            setText(getPreferences(Context.MODE_PRIVATE).getString("opencellid_key", ""))
+            setSelectAllOnFocus(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Дополнительные соты OpenCellID")
+            .setMessage(
+                "Необязательный ключ для загрузки приблизительных позиций сот в радиусе около 1 км. " +
+                    "Он хранится в приложении и передаётся только серверу OpenCellID. " +
+                    "Получить ключ: opencellid.org"
+            )
+            .setView(field)
+            .setPositiveButton("Сохранить") { _, _ ->
+                getPreferences(Context.MODE_PRIVATE).edit()
+                    .putString("opencellid_key", field.text.toString().trim()).apply()
+                lastFetch = null
+                load(force = true)
+            }
+            .setNeutralButton("Удалить") { _, _ ->
+                getPreferences(Context.MODE_PRIVATE).edit().remove("opencellid_key").apply()
+                lastFetch = null
+                load(force = true)
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    override fun onCreate(state: Bundle?) {
+        super.onCreate(state)
+        MapLibre.getInstance(this)
+        HttpRequestUtil().setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
+            chain.proceed(chain.request().newBuilder()
+                .header("User-Agent", "TowerRadar/0.2.0 (+https://github.com/RussoTurissto/TowerRadar)").build())
+        }.build())
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        headingSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        createScreen()
+        mapView.onCreate(state)
+        mapView.getMapAsync { ready ->
+            map = ready
+            ready.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(20.0, 0.0), 2.5))
+            applyBasemap(MapSources.providers[0])
+            chooseBasemap()
             ready.addOnMapClickListener { tapped ->
                 selectTower(tapped)
                 true
@@ -182,6 +354,8 @@ class MainActivity : Activity() {
         })
         status = text("Определяем местоположение…", 12f, Color.rgb(71, 85, 105))
         panel.addView(status)
+        mapStatus = text("Выбираем доступный сервер карты…", 11f, Color.rgb(100, 116, 139))
+        panel.addView(mapStatus)
 
         val filterRow = row()
         panel.addView(filterRow, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(8) })
@@ -199,6 +373,18 @@ class MainActivity : Activity() {
         searchHere = Button(this).apply { text = "Искать здесь"; isAllCaps = false; textSize = 12f }
         actions.addView(refresh, LinearLayout.LayoutParams(0, dp(48), 1f))
         actions.addView(searchHere, LinearLayout.LayoutParams(0, dp(48), 1f))
+        val options = row()
+        panel.addView(options, LinearLayout.LayoutParams(-1, dp(44)))
+        headingView = text("▲ —°", 16f, Color.rgb(29, 78, 216)).apply {
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        options.addView(headingView, LinearLayout.LayoutParams(dp(79), dp(44)))
+        sourceButton = Button(this).apply { text = "Карта"; textSize = 11f; isAllCaps = false }
+        keyButton = Button(this).apply { text = "Доп. соты"; textSize = 11f; isAllCaps = false }
+        options.addView(sourceButton, LinearLayout.LayoutParams(0, dp(44), 1f))
+        options.addView(keyButton, LinearLayout.LayoutParams(0, dp(44), 1f))
+        sourceButton.setOnClickListener { nextBasemap() }
+        keyButton.setOnClickListener { editCellKey() }
 
         locate = Button(this).apply {
             text = "◎"
@@ -328,6 +514,10 @@ class MainActivity : Activity() {
         if (old != null && newLocation.time + 1000L < old.time) return
         location = newLocation
         updateDot()
+        if (status.text.toString().contains("Геолокация выключена") ||
+            status.text.toString().contains("Определяем местоположение")) {
+            status.text = "Геопозиция найдена · точность " + newLocation.accuracy.toInt() + " м"
+        }
         if (manualCenter) return
         val point = LatLng(newLocation.latitude, newLocation.longitude)
         center = point
@@ -357,16 +547,43 @@ class MainActivity : Activity() {
     }
 
     private fun fetch(latitude: Double, longitude: Double, range: Int): List<TowerSite> {
+        // Prefer a geographically suitable endpoint first, fall back on failure.
+        val endpoints = if (longitude in 25.0..180.0 && latitude in 35.0..75.0)
+            listOf(
+                "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+                "https://overpass.private.coffee/api/interpreter",
+                "https://overpass-api.de/api/interpreter"
+            )
+        else listOf(
+            "https://overpass.private.coffee/api/interpreter",
+            "https://overpass-api.de/api/interpreter",
+            "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+        )
+        var lastError: Exception = IOException("Все серверы Overpass недоступны.")
+        for (endpoint in endpoints) {
+            try {
+                return fetchFromOverpass(endpoint, latitude, longitude, range)
+            } catch (e: Exception) {
+                lastError = e
+                if (Thread.currentThread().isInterrupted) throw e
+            }
+        }
+        throw lastError
+    }
+
+    private fun fetchFromOverpass(
+        endpoint: String, latitude: Double, longitude: Double, range: Int
+    ): List<TowerSite> {
         val request = TowerData.query(latitude, longitude, range)
         val body = "data=" + URLEncoder.encode(request, StandardCharsets.UTF_8.name())
-        val connection = (URL("https://overpass-api.de/api/interpreter").openConnection() as HttpURLConnection).apply {
+        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
             connectTimeout = 12000
             readTimeout = 35000
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
             setRequestProperty("Accept", "application/json")
-            setRequestProperty("User-Agent", "TowerRadar/0.1.0 (https://github.com/RussoTurissto/TowerRadar)")
+            setRequestProperty("User-Agent", "TowerRadar/0.2.0 (+https://github.com/RussoTurissto/TowerRadar)")
         }
         try {
             connection.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
@@ -422,7 +639,17 @@ class MainActivity : Activity() {
         executor.execute {
             try {
                 val cached = if (force) null else cache(lat, lon, range)
-                val result = cached ?: fetch(lat, lon, range)
+                val osmSites = cached ?: fetch(lat, lon, range)
+                val key = getPreferences(Context.MODE_PRIVATE)
+                    .getString("opencellid_key", "").orEmpty()
+                var cellError = false
+                val cells = if (key.isBlank()) emptyList() else try {
+                    CellSources.fetch(key, lat, lon)
+                } catch (_: Exception) {
+                    cellError = true
+                    emptyList()
+                }
+                val result = (osmSites + cells).distinctBy { it.id }
                 runOnUiThread {
                     if (isDestroyed || isFinishing) return@runOnUiThread
                     busy = false
@@ -433,8 +660,10 @@ class MainActivity : Activity() {
                     lastFetchRadius = range
                     updateOperatorChoices()
                     showPins()
-                    status.text = "Найдено: " + sites.size + " · $range км · " +
-                        if (cached != null) "кеш" else "OpenStreetMap"
+                    status.text = "Найдено: " + sites.size + " · " + range + " км · " +
+                        if (cellError) "OpenCellID недоступен" else if (cells.isNotEmpty())
+                            "OSM + OpenCellID (" + cells.size + " сот)"
+                        else if (cached != null) "кеш OSM" else "OpenStreetMap"
                 }
             } catch (e: Exception) {
                 val cached = cache(lat, lon, range)
@@ -510,6 +739,7 @@ class MainActivity : Activity() {
             nearest.height?.let { "Высота: " + it },
             "Расстояние: " + distance,
             String.format(Locale.US, "Координаты: %.6f, %.6f", nearest.latitude, nearest.longitude),
+            "База: " + nearest.source,
             "Источник: " + nearest.url
         ).joinToString("\n")
         details.visibility = View.VISIBLE
@@ -523,8 +753,13 @@ class MainActivity : Activity() {
         }
     }
     override fun onStart() { super.onStart(); mapView.onStart() }
-    override fun onResume() { super.onResume(); mapView.onResume(); if (hasLocation()) startLocationUpdates() }
-    override fun onPause() { mapView.onPause(); super.onPause() }
+    override fun onResume() {
+        super.onResume()
+        mapView.onResume()
+        headingSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        if (hasLocation()) startLocationUpdates()
+    }
+    override fun onPause() { sensorManager.unregisterListener(this); mapView.onPause(); super.onPause() }
     override fun onStop() {
         if (listening) {
             locationManager.removeUpdates(listener)

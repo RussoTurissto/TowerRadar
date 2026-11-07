@@ -7,7 +7,8 @@ import kotlin.math.*
 data class TowerSite(
     val id: String, val latitude: Double, val longitude: Double,
     val name: String?, val operator: String?, val mobile: Boolean,
-    val technology: String?, val height: String?, val url: String
+    val technology: String?, val height: String?, val url: String,
+    val source: String = "OpenStreetMap"
 )
 
 /** Calculations independent of the Android UI. OSM positions do not imply a specific serving cell. */
@@ -38,10 +39,15 @@ object TowerData {
         require(radiusKm in radiiKm)
         val point = String.format(Locale.US, "around:%d,%.6f,%.6f", radiusKm * 1000, latitude, longitude)
         return "[out:json][timeout:25];(" +
-            "nwr($point)[\"tower:type\"~\"^(communication|telecommunication)$\"];" +
+            "nwr($point)[\"tower:type\"~\"^(communication|telecommunication|mobile_phone|cellular)$\"];" +
+            "nwr($point)[\"mast:type\"~\"^(communication|telecommunication)$\"];" +
             "nwr($point)[\"communication:mobile_phone\"];" +
             "nwr($point)[\"technology:mobile_phone\"];" +
             "nwr($point)[\"man_made\"=\"communications_tower\"];" +
+            "nwr($point)[\"telecom\"~\"^(antenna|mobile_phone|radio)$\"];" +
+            "nwr($point)[\"communication\"~\"mobile_phone\"];" +
+            "nwr($point)[\"man_made\"~\"^(mast|tower|antenna)$\"][\"operator\"];" +
+            "nwr($point)[\"man_made\"~\"^(mast|tower)$\"][\"network\"];" +
             ");out center tags;"
     }
 
@@ -63,7 +69,9 @@ object TowerData {
             val mobileValue = tags.optString("communication:mobile_phone")
             val mobile = (mobileValue.isNotBlank() && mobileValue.lowercase(Locale.ROOT) !in listOf("no", "false")) ||
                 tags.has("technology:mobile_phone") ||
-                tags.optString("communication") == "mobile_phone"
+                tags.optString("communication").contains("mobile_phone") ||
+                tags.optString("telecom") == "mobile_phone" ||
+                tags.optString("technology:mobile_phone").isNotBlank()
             result += TowerSite(
                 id = "$type/$number",
                 latitude = lat,
