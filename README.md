@@ -2,7 +2,7 @@
 
 An independent Android application for showing nearby telecommunications masts and potentially mobile-network installations on a live map.
 
-**Version:** 0.2.0 (prototype). **Language:** Russian. **Platform:** Android 8.0+.
+**Version:** 0.3.0 (prototype). **Language:** Russian. **Platform:** Android 8.0+.
 
 ## Features
 
@@ -40,3 +40,11 @@ OpenStreetMap data © OpenStreetMap contributors, licensed under ODbL. Provider 
 ### v0.2.0 limitations
 
 Map tiles require an available external tile server; on some networks all public servers may be blocked. The app switches among independent sources, but no online-only solution can guarantee availability without VPN. A logical cell position from OpenCellID is not proof of a physical cellular tower. Locations from OpenStreetMap are likewise crowd-sourced, incomplete, and may be imprecise. The OpenCellID key is stored in app-private preferences, backup is disabled, and requests go directly to OpenCellID (not via Github). Confirm map access on a real device and network.
+
+### v0.3.0 — выбор карты и русские подписи
+
+- Кнопка «Карта» заменена на выпадающий список с автоматическим выбором и четырьмя OSM-подложками.
+- Добавлены **Яндекс Карты (ru_RU)** и **2ГИС** через официальные raster Tiles API. Требуется ваш собственный ключ соответствующего провайдера, сохраняемый на телефоне; сторонние API-тарифы/ограничения зависят от поставщиков.
+- Обычные OSM-подложки подписывают объекты на местных языках: в русскоязычных регионах часто на русском, но за их пределами русский не гарантирован.
+- Выбор карты сохраняется между запусками; при недоступности сервера остаётся ранее доступная подложка; для обновления ключа удерживайте выбранный пункт списка.
+- Для Яндекса необходимы брендирование и соблюдение [условий Tiles API](https://yandex.ru/maps-api/docs/tiles-api/index.html). На экране предусмотрена кликабельная ссылка на Яндекс Карты; перед публичным распространением следует проверить соответствие официальным требованиям логотипа.
