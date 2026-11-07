@@ -1,4 +1,4 @@
-name: Publish verified TowerRadar v0.5.0 APK
+name: Publish verified TowerRadar v0.6.0 APK
 on:
   workflow_run:
     workflows: ["Build Android APK"]
@@ -57,7 +57,7 @@ jobs:
           expected="$(awk '{print $1}' checks/sha256.txt)"
           actual="$(sha256sum extracted/app-debug.apk | awk '{print $1}')"
           test "$expected" = "$actual"
-          cp extracted/app-debug.apk TowerRadar-v0.5.0-debug.apk
+          cp extracted/app-debug.apk TowerRadar-v0.6.0-debug.apk
           echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish direct GitHub Release APK download
@@ -67,14 +67,14 @@ jobs:
           TARGET_SHA: ${{ steps.selection.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view v0.5.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v0.5.0 TowerRadar-v0.5.0-debug.apk --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.6.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v0.6.0 TowerRadar-v0.6.0-debug.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.5.0 TowerRadar-v0.5.0-debug.apk \
+            gh release create v0.6.0 TowerRadar-v0.6.0-debug.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
-              --title "TowerRadar v0.5.0 — Khaki Modern, GPS, сигнал и сота" \
-              --notes "Проверенная тестовая Android-сборка: полноэкранная карта и плавающие кнопки, выдвижная панель управления, Яндекс ID через официальный браузер и ввод ключа из буфера, темы день/ночь/системная, точная и ручная геопозиция, компас, уровни сигнала, обслуживающая сота. Android Lint, unit-тесты и криптографическая проверка APK выполнены в CI. Для Яндекс/2ГИС и OpenCellID требуются личные ключи. APK имеет временную DEBUG-подпись: установка поверх предыдущих сборок может потребовать удаления прежней версии. Оценка соты не означает подтверждённую физическую вышку." \
+              --title "TowerRadar v0.6.0 — Khaki Modern, GPS, сигнал и сота" \
+              --notes "Проверенная тестовая Android-сборка: единые хаки-диалоги и меню, точное перекрестие для ручной позиции, безопасные отступы Android WindowInsets, контрастный адаптивный сектор с настройкой яркости, полноэкранная карта и выдвижная панель, Яндекс ID через официальный браузер. Android Lint, unit-тесты и криптографическая проверка APK выполнены в CI. Для Яндекс/2ГИС и OpenCellID требуются личные ключи. APK имеет временную DEBUG-подпись: установка поверх предыдущих сборок может потребовать удаления прежней версии. Оценка соты не означает подтверждённую физическую вышку." \
               --prerelease
           fi
-          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.5.0/TowerRadar-v0.5.0-debug.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.6.0/TowerRadar-v0.6.0-debug.apk" >> "$GITHUB_STEP_SUMMARY"
