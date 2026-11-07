@@ -87,6 +87,7 @@ import kotlin.math.PI
 /** No background tracking. A search shares the selected coordinates with public Overpass. */
 class MainActivity : Activity(), SensorEventListener {
     private val executor = Executors.newSingleThreadExecutor()
+    private val apiExecutor = Executors.newFixedThreadPool(2)
     private lateinit var topHeader: LinearLayout
     private lateinit var crosshairReticle: CrosshairView
     private lateinit var crosshairControls: LinearLayout
@@ -772,10 +773,15 @@ class MainActivity : Activity(), SensorEventListener {
             .setNegativeButton("Закрыть", null).show()
     }
 
-    private fun verifySavedConnections() {
+    private fun verifySavedConnections(skipActive: Boolean = false) {
+        // The selected map source is already verified by useMapChoice(); avoid
+        // duplicate chargeable Google sessions or OpenCellID requests on startup.
+        val selected = getPreferences(Context.MODE_PRIVATE)
+            .getString("map_provider", "auto")
+        val activePref = MapSources.providers.firstOrNull { it.id == selected }?.keyPref
         for (pref in listOf("map_key_yandex", "map_key_2gis",
             "map_key_google", "opencellid_key")) {
-            verifyConnection(pref)
+            if (!skipActive || pref != activePref) verifyConnection(pref)
         }
     }
 
@@ -790,7 +796,7 @@ class MainActivity : Activity(), SensorEventListener {
         if (!checkingApi.add(pref)) return
         redrawConnectionStatuses()
         val where = activeUserPoint() ?: center ?: LatLng(55.75, 37.62)
-        executor.execute {
+        apiExecutor.execute {
             val result = if (pref == "opencellid_key")
                 ApiConnections.checkOpenCell(key, where.latitude, where.longitude)
             else {
@@ -937,9 +943,9 @@ class MainActivity : Activity(), SensorEventListener {
                 else "Маркер на карте: приблизительная позиция OpenCellID",
                 servingSite?.let { site ->
                     activeUserPoint()?.let { source ->
-                        "Расстояние от " +
-                            if (manualPoint != null) "ручной точки" else "GPS" +
-                                ": " + String.format(Locale.US, "%.2f км",
+                        val origin = if (manualPoint != null) "ручной точки" else "GPS"
+                        "Расстояние от " + origin + ": " +
+                            String.format(Locale.US, "%.2f км",
                                 TowerData.distanceKm(source.latitude, source.longitude,
                                     site.latitude, site.longitude))
                     }
@@ -1057,11 +1063,15 @@ class MainActivity : Activity(), SensorEventListener {
             ready.addOnCameraIdleListener {
                 updateOverlays()
                 if (isChoosingCrosshair) updateCrosshairCoordinates()
-                requestGoogleAttribution()
+                val selected = MapSources.providers.getOrNull(providerIndex)
+                if (selected?.id?.startsWith("google-") == true &&
+                    googleMapSession?.valid() != true && !choosingMap) {
+                    useMapChoice(selected)
+                } else requestGoogleAttribution()
             }
         }
         askLocation()
-        verifySavedConnections()
+        verifySavedConnections(skipActive = true)
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
@@ -2223,6 +2233,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
     override fun onDestroy() {
         executor.shutdownNow()
+        apiExecutor.shutdownNow()
         cellExecutor.shutdownNow()
         mapView.onDestroy()
         super.onDestroy()
