@@ -51,7 +51,11 @@ object CellSources {
                 technology = radio,
                 height = null,
                 url = "https://opencellid.org/",
-                source = "OpenCellID · приблизительно"
+                source = "OpenCellID · приблизительно",
+                samples = cell.optInt("samples", -1).takeIf { it > 0 },
+                estimatedRangeMeters = cell.optInt("range", -1).takeIf { it > 0 },
+                averageSignalDbm = cell.optInt("averageSignalStrength", 0)
+                    .takeIf { it in -150..-20 }
             ))
         }
         return results.distinctBy { it.id }.sortedBy {
@@ -108,9 +112,14 @@ object CellSources {
             if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return null
             TowerSite(
                 "opencellid/" + serving.identity, lat, lon,
-                "Обслуживающая сота " + serving.network,
+                (if (serving.registered) "Обслуживающая" else "Соседняя") +
+                    " радиосота " + serving.network,
                 serving.operator.takeIf { it.isNotBlank() }, true, serving.network,
-                null, "https://opencellid.org/", "OpenCellID · оценка координат соты"
+                null, "https://opencellid.org/", "OpenCellID · оценка координат соты",
+                samples = obj.optInt("samples", -1).takeIf { it > 0 },
+                estimatedRangeMeters = obj.optInt("range", -1).takeIf { it > 0 },
+                averageSignalDbm = obj.optInt("averageSignalStrength", 0)
+                    .takeIf { it in -150..-20 }
             )
         } catch (_: Exception) {
             null
