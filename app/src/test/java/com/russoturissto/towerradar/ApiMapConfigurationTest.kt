@@ -40,6 +40,29 @@ class ApiMapConfigurationTest {
         assertTrue(url.contains("apikey=example-key"))
     }
 
+    @Test fun yandexHighDensityTileKeepsProperWebMercatorProjection() {
+        val provider = MapSources.providers.first { it.id == "yandex" }
+        val url = MapSources.sampleTileUrl(provider, 55.75, 37.62, "test-key")
+        assertTrue(url.contains("scale=2"))
+        assertTrue(url.contains("projection=web_mercator"))
+        assertTrue(url.contains("lang=ru_RU"))
+    }
+
+    @Test fun cacheOnlyProvidersWithKnownTemporaryStoragePermission() {
+        assertTrue(MapTileCache.diskCacheAllowed(
+            MapSources.providers.first { it.id == "yandex" }))
+        assertTrue(mapCacheCheck("osm"))
+        assertFalse(MapTileCache.diskCacheAllowed(
+            MapSources.providers.first { it.id == "google-road" }))
+        assertFalse(MapTileCache.diskCacheAllowed(
+            MapSources.providers.first { it.id == "google-hybrid" }))
+        assertFalse(MapTileCache.diskCacheAllowed(
+            MapSources.providers.first { it.id == "2gis" }))
+    }
+
+    private fun MapCacheCheck(id: String): Boolean =
+        MapTileCache.diskCacheAllowed(MapSources.providers.first { it.id == id })
+
     @Test fun expiredGoogleSessionDoesNotCountAsValid() {
         val expired = GoogleTileSession("example-session", 1L)
         assertFalse(expired.valid())
