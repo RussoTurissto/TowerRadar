@@ -192,7 +192,8 @@ class CellMonitor(
         } catch (_: Exception) { /* no cell identity access; signal remains available */ }
     }
 
-    @SuppressLint("MissingPermission")
+    // All NR signal subclasses are inspected only behind the SDK 29 guard below.
+    @SuppressLint("MissingPermission", "NewApi")
     private fun dispatchSignal(signal: SignalStrength) {
         if (!active) return
         val tm = manager ?: return
