@@ -126,8 +126,9 @@ class CellMonitor(private val activity: Activity, private val listener: (Serving
 
     private fun dispatch(cells: List<CellInfo>?) {
         if (!active) return
-        val selected = cells.orEmpty().firstOrNull { it.isRegistered && it is CellInfoNr }
-            ?: cells.orEmpty().firstOrNull { it.isRegistered }
+        val nr = if (Build.VERSION.SDK_INT >= 29)
+            cells.orEmpty().firstOrNull { it.isRegistered && it is CellInfoNr } else null
+        val selected = nr ?: cells.orEmpty().firstOrNull { it.isRegistered }
         val reading = selected?.let { parse(it, manager?.networkOperatorName.orEmpty(), subscriptionId) }
         if (Looper.myLooper() == Looper.getMainLooper()) listener(reading)
         else mainHandler.post { if (active) listener(reading) }
@@ -165,16 +166,19 @@ class CellMonitor(private val activity: Activity, private val listener: (Serving
                         id.lac, id.cid.toLong(), dbm(s.dbm), null, null, null,
                         s.level.coerceIn(0, 4))
                 }
-                is CellInfoNr -> if (Build.VERSION.SDK_INT >= 29) {
-                    val id = cell.cellIdentity as? CellIdentityNr ?: return null
-                    val s = cell.cellSignalStrength as? CellSignalStrengthNr ?: return null
+                else -> if (Build.VERSION.SDK_INT >= 29) parseNr(cell, operator, subId) else null
+            }
+        }
+
+        @android.annotation.TargetApi(29)
+        private fun parseNr(cell: CellInfo, operator: String, subId: Int): ServingCell? {
+            val nr = cell as? CellInfoNr ?: return null
+                    val id = nr.cellIdentity as? CellIdentityNr ?: return null
+                    val s = nr.cellSignalStrength as? CellSignalStrengthNr ?: return null
                     ServingCell(operator, subId, "NR", id.mccString?.toIntOrNull() ?: -1,
                         id.mncString?.toIntOrNull() ?: -1, id.tac, id.nci, dbm(s.dbm),
                         rsrp(s.ssRsrp), rsrq(s.ssRsrq),
                         s.ssSinr.takeIf { it in -40..50 }?.toFloat(), s.level.coerceIn(0, 4))
-                } else null
-                else -> null
-            }
         }
     }
 }
