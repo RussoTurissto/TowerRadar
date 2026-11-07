@@ -37,26 +37,45 @@ object MapSources {
             "© Яндекс Карты", "map_key_yandex"),
         MapProvider("2gis", "2ГИС · русский",
             "https://tile0.maps.2gis.com/v2/tiles/online_sd/{z}/{x}/{y}.png?key={api_key}",
-            "© 2ГИС", "map_key_2gis")
+            "© 2ГИС", "map_key_2gis"),
+        MapProvider("google-road", "Google Карты · обычная",
+            "https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session={session}&key={api_key}",
+            "Google Maps", "map_key_google"),
+        MapProvider("google-satellite", "Google · Спутник",
+            "https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session={session}&key={api_key}",
+            "Google Maps", "map_key_google"),
+        MapProvider("google-hybrid", "Google · Гибрид",
+            "https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session={session}&key={api_key}",
+            "Google Maps", "map_key_google")
     )
 
     fun unkeyed(): List<MapProvider> = providers.filter { it.keyPref == null }
 
-    fun tileTemplate(provider: MapProvider, key: String = ""): String {
+    fun tileTemplate(provider: MapProvider, key: String = "", session: String = ""): String {
         if (provider.keyPref != null) require(key.isNotBlank()) { "Требуется ключ " + provider.name }
-        return provider.tiles.replace("{api_key}", URLEncoder.encode(key.trim(), "UTF-8"))
+        if (provider.id.startsWith("google-")) require(session.isNotBlank()) {
+            "Необходимо открыть сеанс Google Map Tiles API"
+        }
+        return provider.tiles
+            .replace("{api_key}", URLEncoder.encode(key.trim(), "UTF-8"))
+            .replace("{session}", URLEncoder.encode(session, "UTF-8"))
     }
 
-    fun style(provider: MapProvider, key: String = ""): Style.Builder {
-        val tileSet = TileSet("2.2.0", tileTemplate(provider, key))
+    fun style(provider: MapProvider, key: String = "", session: String = ""): Style.Builder {
+        val tileSet = TileSet("2.2.0", tileTemplate(provider, key, session))
         tileSet.setMinZoom(0f)
-        tileSet.setMaxZoom(if (provider.id == "yandex") 20f else 19f)
+        tileSet.setMaxZoom(when {
+            provider.id.startsWith("google-") -> 22f
+            provider.id == "yandex" -> 20f
+            else -> 19f
+        })
         return Style.Builder()
             .withSource(RasterSource("basemap-source", tileSet))
             .withLayer(RasterLayer("basemap-layer", "basemap-source"))
     }
 
-    fun sampleTileUrl(provider: MapProvider, lat: Double, lon: Double, key: String = ""): String {
+    fun sampleTileUrl(provider: MapProvider, lat: Double, lon: Double, key: String = "",
+        session: String = ""): String {
         val z = 8
         val safeLat = lat.coerceIn(-85.05112878, 85.05112878)
         val safeLon = lon.coerceIn(-180.0, 180.0)
@@ -65,7 +84,7 @@ object MapSources {
         val rad = Math.toRadians(safeLat)
         val y = floor((1 - ln(tan(rad) + 1 / cos(rad)) / PI) / 2 * n)
             .toInt().coerceIn(0, 255)
-        return tileTemplate(provider, key)
+        return tileTemplate(provider, key, session)
             .replace("{z}", z.toString())
             .replace("{x}", x.toString())
             .replace("{y}", y.toString())
@@ -73,6 +92,7 @@ object MapSources {
 
     fun reachable(provider: MapProvider, lat: Double, lon: Double, key: String = ""): Boolean {
         if (provider.keyPref != null && key.isBlank()) return false
+        if (provider.id.startsWith("google-")) return false // session required
         val connection = (URL(sampleTileUrl(provider, lat, lon, key)).openConnection() as HttpURLConnection)
         connection.connectTimeout = 4500
         connection.readTimeout = 4500
