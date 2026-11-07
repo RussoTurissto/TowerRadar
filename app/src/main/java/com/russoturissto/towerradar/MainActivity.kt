@@ -3,6 +3,11 @@ package com.russoturissto.towerradar
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.animation.ValueAnimator
+import android.content.ClipboardManager
+import android.view.MotionEvent
+import android.widget.ScrollView
+import android.widget.Toast
 import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
@@ -79,6 +84,14 @@ import kotlin.math.PI
 /** No background tracking. A search shares the selected coordinates with public Overpass. */
 class MainActivity : Activity(), SensorEventListener {
     private val executor = Executors.newSingleThreadExecutor()
+    private lateinit var rootView: FrameLayout
+    private lateinit var sheetView: LinearLayout
+    private lateinit var sheetExtra: ScrollView
+    private lateinit var sheetHandle: TextView
+    private lateinit var floatingRail: LinearLayout
+    private lateinit var fullScreenButton: Button
+    private var sheetExpanded = false
+    private var mapFullscreen = false
     private lateinit var mapView: MapView
     private lateinit var locationFusion: LocationFusion
     private val cellExecutor = Executors.newSingleThreadExecutor()
@@ -671,170 +684,304 @@ class MainActivity : Activity(), SensorEventListener {
         gravity = Gravity.CENTER_VERTICAL
     }
 
-    private fun createScreen() {
-        val root = FrameLayout(this)
-        setContentView(root)
-        mapView = MapView(this)
-        root.addView(mapView, FrameLayout.LayoutParams(-1, -1))
+    private fun sectionTitle(value: String): TextView = text(value, 12f, palette.olive).apply {
+        setTypeface(typeface, android.graphics.Typeface.BOLD)
+        setPadding(dp(1), dp(12), dp(1), dp(5))
+    }
 
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(palette.surface)
-            elevation = dp(8).toFloat()
-        }
-        val panelParams = FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
-            setMargins(dp(12), dp(12), dp(12), 0)
-        }
-        root.addView(panel, panelParams)
+    /** A real full-screen map: only lightweight controls float above it. */
+    private fun createScreen() {
+        rootView = FrameLayout(this)
+        setContentView(rootView)
+        mapView = MapView(this)
+        rootView.addView(mapView, FrameLayout.LayoutParams(-1, -1))
+
+        // Small heading / GPS chip and always-reachable settings / full-screen controls.
         val header = row()
-        panel.addView(header)
-        val title = text("◉  TowerRadar", 20f, palette.text).apply {
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-        }
-        header.addView(title, LinearLayout.LayoutParams(0, dp(43), 1f).apply {
-            gravity = Gravity.CENTER_VERTICAL
+        rootView.addView(header, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
+            setMargins(dp(12), dp(10), dp(12), 0)
         })
+        val headingChip = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            background = rounded(palette.surface, 17)
+            elevation = dp(6).toFloat()
+        }
+        header.addView(headingChip, LinearLayout.LayoutParams(0, -2, 1f))
+        headingView = text("➤ —°", 18f, palette.olive).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        headingChip.addView(headingView)
+        gpsLabel = text("GPS / Wi-Fi: ожидание", 11f, palette.secondary)
+        headingChip.addView(gpsLabel)
+        headingChip.setOnClickListener { showPositionOptions() }
+        fullScreenButton = styledButton("⛶", 19f).apply {
+            contentDescription = "Полноэкранная карта"
+            setOnClickListener { setMapFullscreen(!mapFullscreen) }
+        }
+        header.addView(fullScreenButton, LinearLayout.LayoutParams(dp(43), dp(43)).apply {
+            marginStart = dp(7)
+        })
+        settingsButton = styledButton("⚙", 22f).apply {
+            contentDescription = "Настройки"
+            setOnClickListener { showSettings() }
+        }
+        header.addView(settingsButton, LinearLayout.LayoutParams(dp(43), dp(43)).apply {
+            marginStart = dp(7)
+        })
+
+        // Right-side quick actions. Hidden while the sheet is expanded.
+        floatingRail = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            elevation = dp(7).toFloat()
+        }
+        rootView.addView(floatingRail, FrameLayout.LayoutParams(-2, -2,
+            Gravity.END or Gravity.BOTTOM).apply {
+            setMargins(0, 0, dp(12), dp(112))
+        })
+        fun railButton(button: Button, hint: String) {
+            button.contentDescription = hint
+            floatingRail.addView(button, LinearLayout.LayoutParams(dp(49), dp(49)).apply {
+                bottomMargin = dp(8)
+            })
+        }
         gpsRefresh = styledButton("⌖", 22f)
-        gpsRefresh.contentDescription = "Уточнить GPS"
+        railButton(gpsRefresh, "Уточнить GPS")
         gpsRefresh.setOnClickListener {
             if (!manualCenter) {
                 startLocationUpdates()
                 locationFusion.refresh()
                 status.text = "Уточняем местоположение через GPS и Wi-Fi…"
-            } else status.text = "Активна ручная геопозиция. Для GPS нажмите кнопку ◎."
+                Toast.makeText(this, "Уточняем GPS и Wi-Fi", Toast.LENGTH_SHORT).show()
+            } else showPositionOptions()
         }
-        header.addView(gpsRefresh, LinearLayout.LayoutParams(dp(43), dp(42)).apply {
-            marginEnd = dp(6)
-        })
-        settingsButton = styledButton("⚙", 23f)
-        settingsButton.contentDescription = "Настройки TowerRadar"
-        settingsButton.setOnClickListener { showSettings() }
-        header.addView(settingsButton, LinearLayout.LayoutParams(dp(43), dp(42)))
-        status = text("Определяем местоположение…", 12f, palette.secondary)
-        panel.addView(status)
-        gpsLabel = text("GPS / Wi-Fi: ожидаем координаты", 11f, palette.secondary)
-        panel.addView(gpsLabel)
-        mapStatus = text("Выбираем доступный сервер карты…", 11f, palette.secondary)
-        panel.addView(mapStatus)
+        searchHere = styledButton("⌕", 22f)
+        railButton(searchHere, "Искать вышки в центре карты")
+        searchHere.setOnClickListener {
+            map?.cameraPosition?.target?.let {
+                center = it
+                manualCenter = true
+                lastFetch = null
+                load(force = true)
+                Toast.makeText(this, "Ищем вышки в центре карты", Toast.LENGTH_SHORT).show()
+            }
+        }
+        locate = styledButton("◎", 24f, true)
+        railButton(locate, "Вернуться к автоматическому GPS")
+        locate.setOnClickListener { useAutomaticPosition() }
+        locate.setOnLongClickListener { showPositionOptions(); true }
+
+        // Bottom sheet: 84dp closed, up to ~72% of screen on demand.
+        sheetView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(palette.surface, 22)
+            elevation = dp(12).toFloat()
+            setPadding(dp(14), dp(3), dp(14), dp(7))
+        }
+        rootView.addView(sheetView, FrameLayout.LayoutParams(-1, dp(84),
+            Gravity.BOTTOM).apply { setMargins(dp(6), 0, dp(6), 0) })
+
+        sheetHandle = text("⌃  Подробности", 11f, palette.secondary).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(8), 0, dp(8), 0)
+            contentDescription = "Развернуть панель управления"
+        }
+        sheetView.addView(sheetHandle, LinearLayout.LayoutParams(-1, dp(20)))
+        var touchY = 0f
+        sheetHandle.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    touchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val diff = event.rawY - touchY
+                    if (diff < -dp(24)) expandSheet(true)
+                    else if (diff > dp(24)) expandSheet(false)
+                    else expandSheet(!sheetExpanded)
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> true
+                else -> true
+            }
+        }
 
         val signalRow = row()
-        signalRow.setPadding(0, dp(6), 0, 0)
-        panel.addView(signalRow, LinearLayout.LayoutParams(-1, dp(47)))
-        signalLabel = text("Сеть: ожидаем данные SIM", 13f, palette.text).apply {
+        sheetView.addView(signalRow, LinearLayout.LayoutParams(-1, dp(29)))
+        signalLabel = text("Сеть: ожидаем SIM", 14f, palette.text).apply {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER_VERTICAL
+            setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
         }
-        signalRow.addView(signalLabel, LinearLayout.LayoutParams(0, -2, 1f))
+        signalRow.addView(signalLabel, LinearLayout.LayoutParams(0, dp(29), 1f))
         signalBars = LinearLayout(this).apply {
             gravity = Gravity.BOTTOM
             orientation = LinearLayout.HORIZONTAL
         }
-        for (h in listOf(11, 15, 19, 23, 27)) {
+        for (h in listOf(9, 12, 15, 19, 23)) {
             signalBars.addView(View(this).apply {
                 background = rounded(palette.signalMuted, 3)
-            }, LinearLayout.LayoutParams(dp(10), dp(h)).apply { marginStart = dp(4) })
+            }, LinearLayout.LayoutParams(dp(9), dp(h)).apply { marginStart = dp(3) })
         }
-        signalRow.addView(signalBars, LinearLayout.LayoutParams(-2, dp(29)))
-        signalDetails = text("Сигнал: нет измерения", 11f, palette.secondary)
-        panel.addView(signalDetails)
-        cellStatus = text("Обслуживающая сота: определяем…", 11f, palette.secondary)
-        panel.addView(cellStatus)
+        signalRow.addView(signalBars, LinearLayout.LayoutParams(-2, dp(25)))
+        signalDetails = text("Сигнал: нет измерения", 11f, palette.secondary).apply {
+            setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        sheetView.addView(signalDetails)
         signalRow.setOnClickListener { showSignalDetails() }
         signalDetails.setOnClickListener { showSignalDetails() }
-        cellStatus.setOnClickListener { showSignalDetails() }
 
+        sheetExtra = ScrollView(this).apply {
+            fillViewport = false
+            isVerticalScrollBarEnabled = true
+            visibility = View.GONE
+        }
+        sheetView.addView(sheetExtra, LinearLayout.LayoutParams(-1, 0, 1f).apply {
+            topMargin = dp(10)
+        })
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(2), 0, dp(2), dp(22))
+        }
+        sheetExtra.addView(controls, ScrollView.LayoutParams(-1, -2))
+
+        controls.addView(sectionTitle("ПОИСК ВЫШЕК"))
         val filterRow = row()
-        panel.addView(filterRow, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(8) })
+        controls.addView(filterRow, LinearLayout.LayoutParams(-1, dp(48)))
         radius = Spinner(this)
         radius.adapter = choice(TowerData.radiiKm.map { "$it км" })
         radius.setSelection(TowerData.radiiKm.indexOf(radiusKm))
-        filterRow.addView(radius, LinearLayout.LayoutParams(dp(102), dp(48)))
+        filterRow.addView(radius, LinearLayout.LayoutParams(dp(96), dp(47)))
         operators = Spinner(this)
-        filterRow.addView(operators, LinearLayout.LayoutParams(0, dp(48), 1f).apply { leftMargin = dp(8) })
+        filterRow.addView(operators, LinearLayout.LayoutParams(0, dp(47), 1f).apply {
+            marginStart = dp(10)
+        })
         updateOperatorChoices()
 
         val actions = row()
-        panel.addView(actions, LinearLayout.LayoutParams(-1, dp(49)))
+        controls.addView(actions, LinearLayout.LayoutParams(-1, dp(49)).apply {
+            topMargin = dp(6)
+        })
         refresh = styledButton("Обновить вышки", 12f, true)
-        searchHere = styledButton("Искать здесь", 12f)
-        actions.addView(refresh, LinearLayout.LayoutParams(0, dp(48), 1f))
-        actions.addView(searchHere, LinearLayout.LayoutParams(0, dp(48), 1f))
-        val options = row()
-        panel.addView(options, LinearLayout.LayoutParams(-1, dp(44)))
-        headingView = text("➤ —°", 15f, palette.olive).apply {
-            gravity = Gravity.CENTER_VERTICAL
+        actions.addView(refresh, LinearLayout.LayoutParams(0, dp(47), 1f).apply {
+            marginEnd = dp(5)
+        })
+        val searchControl = styledButton("Искать здесь", 12f)
+        actions.addView(searchControl, LinearLayout.LayoutParams(0, dp(47), 1f))
+        refresh.setOnClickListener { load(force = true) }
+        searchControl.setOnClickListener {
+            map?.cameraPosition?.target?.let { point ->
+                center = point
+                manualCenter = true
+                lastFetch = null
+                load(force = true)
+                expandSheet(false)
+            }
         }
-        options.addView(headingView, LinearLayout.LayoutParams(dp(103), dp(44)))
+
+        controls.addView(sectionTitle("КАРТОГРАФИЧЕСКАЯ ПОДЛОЖКА"))
         sourceSpinner = Spinner(this)
-        sourceSpinner.adapter = choice(listOf("Карта: авто") + MapSources.providers.map { it.name })
-        val prefId = getPreferences(Context.MODE_PRIVATE)
-            .getString("map_provider", "auto") ?: "auto"
-        val initial = MapSources.providers.indexOfFirst { it.id == prefId }
-        sourceSpinner.setSelection(initial + 1)
-        keyButton = styledButton("Доп. соты", 11f)
-        options.addView(sourceSpinner, LinearLayout.LayoutParams(0, dp(44), 1f))
-        options.addView(keyButton, LinearLayout.LayoutParams(dp(96), dp(44)))
+        sourceSpinner.adapter = choice(listOf("Автоматически · OSM") + MapSources.providers.map { it.name })
+        val prefId = getPreferences(Context.MODE_PRIVATE).getString("map_provider", "auto") ?: "auto"
+        sourceSpinner.setSelection(MapSources.providers.indexOfFirst { it.id == prefId } + 1)
+        controls.addView(sourceSpinner, LinearLayout.LayoutParams(-1, dp(46)))
+        val yandexButton = styledButton("Яндекс ID · подключить карты", 12f).apply {
+            contentDescription = "Войти в кабинет Яндекса и получить ключ Tiles API"
+            setOnClickListener { showYandexSetup() }
+        }
+        controls.addView(yandexButton, LinearLayout.LayoutParams(-1, dp(42)).apply {
+            topMargin = dp(5)
+        })
+        mapStatus = text("Выбираем доступный сервер карты…", 11f, palette.secondary)
+        controls.addView(mapStatus)
         sourceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            override fun onItemSelected(
-                parent: AdapterView<*>?, view: View?, position: Int, id: Long
-            ) {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?,
+                                        position: Int, id: Long) {
                 if (map == null) return
                 if (position == 0) {
                     getPreferences(Context.MODE_PRIVATE).edit()
                         .putString("map_provider", "auto").apply()
                     chooseBasemap()
-                } else {
-                    useMapChoice(MapSources.providers[position - 1])
-                }
+                } else useMapChoice(MapSources.providers[position - 1])
             }
         }
         sourceSpinner.setOnLongClickListener {
-            val item = MapSources.providers.getOrNull(sourceSpinner.selectedItemPosition - 1)
-            if (item?.keyPref != null) {
-                requestMapKey(item)
+            MapSources.providers.getOrNull(sourceSpinner.selectedItemPosition - 1)?.let {
+                if (it.id == "yandex") showYandexSetup()
+                else if (it.keyPref != null) requestMapKey(it)
+                else return@setOnLongClickListener false
                 true
-            } else false
+            } ?: false
         }
+
+        controls.addView(sectionTitle("ГЕОПОЗИЦИЯ"))
+        val positionButton = styledButton("Изменить местоположение · GPS / вручную", 12f)
+        controls.addView(positionButton, LinearLayout.LayoutParams(-1, dp(44)))
+        positionButton.setOnClickListener { showPositionOptions() }
+        status = text("Определяем местоположение…", 11f, palette.secondary)
+        controls.addView(status)
+
+        controls.addView(sectionTitle("СОТОВАЯ СЕТЬ"))
+        cellStatus = text("Обслуживающая сота: определяем…", 12f, palette.secondary)
+        controls.addView(cellStatus)
+        cellStatus.setOnClickListener { showSignalDetails() }
+        val cellActions = row()
+        controls.addView(cellActions, LinearLayout.LayoutParams(-1, dp(44)).apply {
+            topMargin = dp(8)
+        })
+        val simButton = styledButton("Выбор SIM", 12f)
+        keyButton = styledButton("Доп. соты", 12f)
+        cellActions.addView(simButton, LinearLayout.LayoutParams(0, dp(43), 1f).apply {
+            marginEnd = dp(5)
+        })
+        cellActions.addView(keyButton, LinearLayout.LayoutParams(0, dp(43), 1f))
+        simButton.setOnClickListener { selectSim() }
         keyButton.setOnClickListener { editCellKey() }
 
-        locate = styledButton("◎", 25f, true).apply {
-            contentDescription = "Вернуться к GPS"
-            elevation = dp(6).toFloat()
-            setOnLongClickListener { showPositionOptions(); true }
-        }
-        root.addView(locate, FrameLayout.LayoutParams(dp(54), dp(54), Gravity.END or Gravity.BOTTOM).apply {
-            setMargins(0, 0, dp(14), dp(64))
-        })
+        controls.addView(sectionTitle("ДОПОЛНИТЕЛЬНО"))
+        val settingsControl = styledButton("Открыть настройки · оформление / компас", 12f)
+        controls.addView(settingsControl, LinearLayout.LayoutParams(-1, dp(44)))
+        settingsControl.setOnClickListener { showSettings() }
 
+        // Detail panel sits above the bottom sheet only when a pin is selected.
         details = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = rounded(palette.surface)
+            setPadding(dp(13), dp(10), dp(13), dp(10))
+            background = rounded(palette.surface, 15)
             elevation = dp(9).toFloat()
             visibility = View.GONE
         }
-        root.addView(details, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
-            setMargins(dp(12), 0, dp(12), dp(52))
+        rootView.addView(details, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
+            setMargins(dp(11), 0, dp(11), dp(95))
         })
         val detailRow = row()
         details.addView(detailRow)
-        detailTitle = text("", 17f, palette.text).apply {
+        detailTitle = text("", 16f, palette.text).apply {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         }
         detailRow.addView(detailTitle, LinearLayout.LayoutParams(0, -2, 1f))
-        detailRow.addView(styledButton("✕", 18f).apply {
+        detailRow.addView(styledButton("✕", 17f).apply {
             setOnClickListener { details.visibility = View.GONE }
-        }, LinearLayout.LayoutParams(dp(54), dp(44)))
-        detailBody = text("", 13f, palette.secondary)
+        }, LinearLayout.LayoutParams(dp(43), dp(40)))
+        detailBody = text("", 12f, palette.secondary).apply {
+            maxLines = 9
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
         details.addView(detailBody)
+        details.setOnClickListener { showSignalDetails() }
 
         mapAttribution = text("© OpenStreetMap contributors", 10f, palette.text).apply {
             setPadding(dp(6), dp(3), dp(6), dp(3))
             background = rounded(palette.surface, 3)
         }
-        root.addView(mapAttribution, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.BOTTOM).apply {
-            setMargins(dp(8), 0, 0, dp(9))
+        rootView.addView(mapAttribution, FrameLayout.LayoutParams(-2, -2,
+            Gravity.START or Gravity.BOTTOM).apply {
+            setMargins(dp(8), 0, 0, dp(91))
         })
         brandLink = text("Яндекс Карты", 12f, palette.olive).apply {
             setPadding(dp(8), dp(5), dp(8), dp(5))
@@ -844,25 +991,78 @@ class MainActivity : Activity(), SensorEventListener {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://yandex.ru/maps/")))
             }
         }
-        root.addView(brandLink, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.BOTTOM).apply {
-            setMargins(0, 0, dp(8), dp(8))
+        rootView.addView(brandLink, FrameLayout.LayoutParams(-2, -2,
+            Gravity.END or Gravity.BOTTOM).apply {
+            setMargins(0, 0, dp(8), dp(91))
         })
 
         radius.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                val newValue = TowerData.radiiKm[position]
-                if (radiusKm != newValue) {
-                    radiusKm = newValue
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?,
+                                        position: Int, id: Long) {
+                val next = TowerData.radiiKm[position]
+                if (radiusKm != next) {
+                    radiusKm = next
                     load(force = true)
                 }
             }
         }
-        refresh.setOnClickListener { load(force = true) }
-        searchHere.setOnClickListener {
-            map?.cameraPosition?.target?.let(::setManualPosition)
+    }
+
+    private fun setMapFullscreen(full: Boolean) {
+        mapFullscreen = full
+        sheetView.visibility = if (full) View.GONE else View.VISIBLE
+        floatingRail.visibility = if (full || sheetExpanded) View.GONE else View.VISIBLE
+        fullScreenButton.text = if (full) "▣" else "⛶"
+        fullScreenButton.contentDescription = if (full) "Вернуть панель" else "На весь экран"
+        updateMapChrome(if (full) 0 else sheetView.layoutParams.height)
+        if (full) details.visibility = View.GONE
+    }
+
+    private fun expandSheet(expanded: Boolean) {
+        if (mapFullscreen) setMapFullscreen(false)
+        sheetExpanded = expanded
+        sheetHandle.text = if (expanded) "⌄  Свернуть" else "⌃  Подробности"
+        sheetHandle.contentDescription = if (expanded)
+            "Свернуть панель" else "Развернуть панель"
+        sheetExtra.visibility = if (expanded) View.VISIBLE else View.GONE
+        floatingRail.visibility = if (expanded) View.GONE else View.VISIBLE
+        if (expanded) details.visibility = View.GONE
+        val usable = rootView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val maxHeight = (usable - dp(85)).coerceAtLeast(dp(230))
+        val target = if (expanded) ((usable * 0.73f).toInt()).coerceIn(
+            dp(230).coerceAtMost(maxHeight), maxHeight
+        ) else dp(84)
+        val startHeight = sheetView.layoutParams.height
+        ValueAnimator.ofInt(startHeight, target).apply {
+            duration = 220L
+            addUpdateListener { animator ->
+                val height = animator.animatedValue as Int
+                sheetView.layoutParams = (sheetView.layoutParams as FrameLayout.LayoutParams).apply {
+                    this.height = height
+                }
+                updateMapChrome(height)
+            }
+        }.start()
+    }
+
+    private fun updateMapChrome(sheetHeight: Int) {
+        val footerMargin = sheetHeight + dp(7)
+        if (::mapAttribution.isInitialized) {
+            mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
+                bottomMargin = footerMargin
+            }
         }
-        locate.setOnClickListener { useAutomaticPosition() }
+        if (::brandLink.isInitialized) {
+            brandLink.layoutParams = (brandLink.layoutParams as FrameLayout.LayoutParams).apply {
+                bottomMargin = footerMargin
+            }
+        }
+        if (::details.isInitialized) {
+            details.layoutParams = (details.layoutParams as FrameLayout.LayoutParams).apply {
+                bottomMargin = footerMargin + dp(8)
+            }
+        }
     }
 
     private fun updateOperatorChoices() {
