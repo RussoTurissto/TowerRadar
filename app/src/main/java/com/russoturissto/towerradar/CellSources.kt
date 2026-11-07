@@ -83,4 +83,38 @@ object CellSources {
         }
         return result.distinctBy { it.id }
     }
+
+    /** An exact OpenCellID lookup; never infer the serving tower from the nearest OSM pin. */
+    fun lookup(key: String, serving: ServingCell): TowerSite? {
+        if (key.isBlank() || !serving.validId) return null
+        val radio = URLEncoder.encode(serving.network, "UTF-8")
+        val url = URL(
+            "https://opencellid.org/cell/get?key=" + URLEncoder.encode(key.trim(), "UTF-8") +
+            "&mcc=" + serving.mcc + "&mnc=" + serving.mnc +
+            "&lac=" + serving.area + "&cellid=" + serving.cellId +
+            "&radio=" + radio + "&format=json"
+        )
+        val conn = url.openConnection() as HttpURLConnection
+        conn.connectTimeout = 7000
+        conn.readTimeout = 10000
+        conn.setRequestProperty("User-Agent", "TowerRadar/0.4.0 (+https://github.com/RussoTurissto/TowerRadar)")
+        return try {
+            if (conn.responseCode !in 200..299) return null
+            val response = conn.inputStream.bufferedReader().use { it.readText() }
+            val obj = JSONObject(response)
+            if (obj.optString("stat") == "fail" || obj.has("error")) return null
+            val lat = obj.optDouble("lat", Double.NaN)
+            val lon = obj.optDouble("lon", Double.NaN)
+            if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return null
+            TowerSite(
+                "opencellid/" + serving.identity, lat, lon,
+                "Обслуживающая сота " + serving.network,
+                serving.operator.takeIf { it.isNotBlank() }, true, serving.network,
+                null, "https://opencellid.org/", "OpenCellID · оценка координат соты"
+            )
+        } catch (_: Exception) {
+            null
+        } finally { conn.disconnect() }
+    }
+
 }
