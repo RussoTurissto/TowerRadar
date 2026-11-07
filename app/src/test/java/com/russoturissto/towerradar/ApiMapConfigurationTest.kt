@@ -60,7 +60,7 @@ class ApiMapConfigurationTest {
             MapSources.providers.first { it.id == "2gis" }))
     }
 
-    private fun MapCacheCheck(id: String): Boolean =
+    private fun mapCacheCheck(id: String): Boolean =
         MapTileCache.diskCacheAllowed(MapSources.providers.first { it.id == id })
 
     @Test fun expiredGoogleSessionDoesNotCountAsValid() {
