@@ -1,4 +1,4 @@
-name: Publish verified TowerRadar v0.10.0 APK
+name: Publish verified TowerRadar v0.11.0 APK
 on:
   workflow_run:
     workflows: ["Build Android APK"]
@@ -60,7 +60,7 @@ jobs:
           expected="$(awk '{print $1}' checks/sha256.txt)"
           actual="$(sha256sum extracted/towerradar-signed.apk | awk '{print $1}')"
           test "$expected" = "$actual"
-          cp extracted/towerradar-signed.apk TowerRadar-v0.10.0.apk
+          cp extracted/towerradar-signed.apk TowerRadar-v0.11.0.apk
           echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish direct GitHub Release APK download
@@ -70,15 +70,15 @@ jobs:
           TARGET_SHA: ${{ steps.selection.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view v0.10.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit v0.10.0 --prerelease --repo "$GITHUB_REPOSITORY"
-            gh release upload v0.10.0 TowerRadar-v0.10.0.apk --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.11.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit v0.11.0 --prerelease --repo "$GITHUB_REPOSITORY"
+            gh release upload v0.11.0 TowerRadar-v0.11.0.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.10.0 TowerRadar-v0.10.0.apk \
+            gh release create v0.11.0 TowerRadar-v0.11.0.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
-              --title "TowerRadar v0.10.0 — постоянная подпись, радиосигнал и соседние соты" \
-              --notes "Предварительная версия TowerRadar 0.10.0. APK подписан постоянным RSA4096 ключом TowerRadar из GitHub Secrets, APK v2 и сертификат SHA-256 проверены в CI. Мониторинг оператора/мощности и пяти делений работает отдельно от GPS при наличии данных модема. Сканер соседних сот, PCI, радиоканалы EARFCN/NRARFCN, диапазоны B/n, Timing Advance, точный поиск отдельных сот через OpenCellID и официальные реестры в браузере. Координаты OpenCellID — оценка, OSM-маркеры не считаются доказательством подключения. ВАЖНО: из-за смены с debug-подписи на постоянную первый переход может потребовать переустановку, прежде сохрани API-ключи и настройки. Эта версия Pre-release, стабильная 1.0.0 только с отдельного разрешения пользователя." \
+              --title "TowerRadar v0.11.0 — карта без лишней плавающей ссылки" \
+              --notes "TowerRadar 0.11.0 Pre-release: убрана дополнительная плавающая кнопка перехода в Яндекс Карты/Google Maps справа на карте; обязательная атрибуция поставщика сохранена в существующем нижнем углу карты (для Яндекса доступна ссылка из атрибуции). Подложки, API-ключи, Google и Яндекс карты, кеш и мобильный мониторинг не изменены. APK подписан постоянным сертификатом TowerRadar из защищённых Secrets, SHA-256 сертификата и v2-подпись проверяются автоматически. Эта версия предварительная, стабильная 1.0.0 только с отдельного разрешения пользователя." \
               --prerelease
           fi
-          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.10.0/TowerRadar-v0.10.0.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.11.0/TowerRadar-v0.11.0.apk" >> "$GITHUB_STEP_SUMMARY"
