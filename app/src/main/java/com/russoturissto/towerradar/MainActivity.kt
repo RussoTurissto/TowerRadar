@@ -842,6 +842,7 @@ class MainActivity : Activity(), SensorEventListener {
             contentDescription = "Развернуть панель управления"
         }
         sheetView.addView(sheetHandle, LinearLayout.LayoutParams(-1, dp(20)))
+        sheetHandle.setOnClickListener { expandSheet(!sheetExpanded) }
         var touchY = 0f
         sheetHandle.setOnTouchListener { _, event ->
             when (event.actionMasked) {
@@ -853,7 +854,7 @@ class MainActivity : Activity(), SensorEventListener {
                     val diff = event.rawY - touchY
                     if (diff < -dp(24)) expandSheet(true)
                     else if (diff > dp(24)) expandSheet(false)
-                    else expandSheet(!sheetExpanded)
+                    else sheetHandle.performClick()
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> true
