@@ -202,30 +202,7 @@ class MainActivity : Activity(), SensorEventListener {
             headingView.text = "➤ " + degrees.toInt() + "° " + direction
         }
         updateOverlays()
-        (map?.style?.getLayer("phone-heading") as? SymbolLayer)
-            ?.setProperties(PropertyFactory.iconRotate(degrees))
-    }
 
-    private fun headingIcon(): Bitmap {
-        val image = Bitmap.createBitmap(72, 72, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(image)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(0, 170, 199)
-            style = Paint.Style.FILL
-        }
-        val triangle = Path().apply {
-            moveTo(36f, 4f)
-            lineTo(12f, 60f)
-            lineTo(36f, 48f)
-            lineTo(60f, 60f)
-            close()
-        }
-        canvas.drawPath(triangle, paint)
-        paint.color = Color.WHITE
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 3f
-        canvas.drawPath(triangle, paint)
-        return image
     }
 
     private fun applyBasemap(provider: MapProvider, key: String = "",
@@ -268,6 +245,7 @@ class MainActivity : Activity(), SensorEventListener {
             style.addSource(GeoJsonSource("my-location", emptyFeatures()))
             style.addSource(GeoJsonSource("gps-accuracy", emptyFeatures()))
             style.addSource(GeoJsonSource("heading-cone", emptyFeatures()))
+            style.addSource(GeoJsonSource("heading-near", emptyFeatures()))
             style.addSource(GeoJsonSource("heading-border", emptyFeatures()))
             style.addSource(GeoJsonSource("heading-ray", emptyFeatures()))
             style.addSource(GeoJsonSource("cell-link", emptyFeatures()))
@@ -276,28 +254,37 @@ class MainActivity : Activity(), SensorEventListener {
             style.addLayer(FillLayer("gps-accuracy-fill", "gps-accuracy").apply {
                 setProperties(PropertyFactory.fillColor(palette.olive), PropertyFactory.fillOpacity(0.10f))
             })
+            // Compact radar: soft cyan fill, lightly stroked arc, dashed central
+            // bearing. Beam and sector have separate 0–100% intensity controls.
             style.addLayer(FillLayer("heading-cone-fill", "heading-cone").apply {
-                setProperties(
-                    PropertyFactory.fillColor(Color.rgb(0, 179, 205)),
-                    PropertyFactory.fillOpacity(sectorAlpha())
-                )
+                setProperties(PropertyFactory.fillColor(Color.rgb(20, 189, 211)),
+                    PropertyFactory.fillOpacity(sectorAlpha()))
+            })
+            style.addLayer(FillLayer("heading-near-fill", "heading-near").apply {
+                setProperties(PropertyFactory.fillColor(Color.rgb(68, 230, 229)),
+                    PropertyFactory.fillOpacity(sectorAlpha() * .38f))
             })
             style.addLayer(LineLayer("heading-border-halo", "heading-border").apply {
                 setProperties(PropertyFactory.lineColor(Color.WHITE),
-                    PropertyFactory.lineOpacity(0.92f),
-                    PropertyFactory.lineWidth(6f))
+                    PropertyFactory.lineWidth(3f),
+                    PropertyFactory.lineOpacity(sectorAlpha() * .20f))
             })
             style.addLayer(LineLayer("heading-border-color", "heading-border").apply {
-                setProperties(PropertyFactory.lineColor(Color.rgb(0, 99, 148)),
-                    PropertyFactory.lineWidth(2.8f))
+                setProperties(PropertyFactory.lineColor(Color.rgb(5, 144, 177)),
+                    PropertyFactory.lineWidth(1.5f),
+                    PropertyFactory.lineOpacity(sectorAlpha() * .85f))
             })
             style.addLayer(LineLayer("heading-center-halo", "heading-ray").apply {
                 setProperties(PropertyFactory.lineColor(Color.WHITE),
-                    PropertyFactory.lineWidth(7.0f))
+                    PropertyFactory.lineWidth(5f),
+                    PropertyFactory.lineOpacity(beamAlpha() * .24f),
+                    PropertyFactory.lineDasharray(arrayOf(1.4f, 2.1f)))
             })
             style.addLayer(LineLayer("heading-center-color", "heading-ray").apply {
-                setProperties(PropertyFactory.lineColor(Color.rgb(0, 130, 204)),
-                    PropertyFactory.lineWidth(3.8f))
+                setProperties(PropertyFactory.lineColor(Color.rgb(0, 195, 220)),
+                    PropertyFactory.lineWidth(3.1f),
+                    PropertyFactory.lineOpacity(beamAlpha()),
+                    PropertyFactory.lineDasharray(arrayOf(1.4f, 2.1f)))
             })
             style.addLayer(LineLayer("serving-line", "cell-link").apply {
                 setProperties(PropertyFactory.lineColor(Color.rgb(215, 141, 45)),
@@ -344,15 +331,13 @@ class MainActivity : Activity(), SensorEventListener {
                 )
             })
 
-            style.addImage("phone-direction", headingIcon())
-            style.addLayer(SymbolLayer("phone-heading", "my-location").apply {
+            style.addLayer(CircleLayer("location-compass-ring", "my-location").apply {
                 setProperties(
-                    PropertyFactory.iconImage("phone-direction"),
-                    PropertyFactory.iconRotate(headingDegrees),
-                    PropertyFactory.iconSize(0.62f),
-                    PropertyFactory.iconAllowOverlap(true),
-                    PropertyFactory.iconIgnorePlacement(true),
-                    PropertyFactory.iconRotationAlignment("map")
+                    PropertyFactory.circleColor(Color.TRANSPARENT),
+                    PropertyFactory.circleRadius(19f),
+                    PropertyFactory.circleStrokeColor(Color.rgb(66, 165, 161)),
+                    PropertyFactory.circleStrokeOpacity(0.80f),
+                    PropertyFactory.circleStrokeWidth(2.0f)
                 )
             })
             styled = true
@@ -2043,50 +2028,49 @@ class MainActivity : Activity(), SensorEventListener {
         } ?: emptyFeatures()
         (map?.style?.getSource("gps-accuracy") as? GeoJsonSource)?.setGeoJson(accuracy)
         val visibleDirection = showCone && headingSensor != null && point != null
-        val sector = if (visibleDirection && point != null) {
-            // Convert the visible screen scale into metres. The previous fixed 600 m
-            // radius disappeared when the user zoomed out.
-            val resolution = (156543.03392 * cos(Math.toRadians(point.latitude))
-                .coerceAtLeast(0.01)) / 2.0.pow((map?.cameraPosition?.zoom ?: 13.0))
-            val screen = kotlin.math.min(mapView.width, mapView.height)
-                .coerceAtLeast(dp(320)).toDouble()
-            val length = (resolution * screen * 0.39).coerceIn(30.0, 800000.0)
-            val headings = (-38..38 step 4).map { headingDegrees.toDouble() + it }
-            val origin = Point.fromLngLat(point.longitude, point.latitude)
-            val ring = listOf(origin) +
-                headings.map { geoPoint(point.latitude, point.longitude, length, it) } +
-                origin
-            FeatureCollection.fromFeatures(arrayOf(
-                Feature.fromGeometry(Polygon.fromLngLats(listOf(ring)))
-            ))
-        } else emptyFeatures()
-        (map?.style?.getSource("heading-cone") as? GeoJsonSource)?.setGeoJson(sector)
         if (visibleDirection && point != null) {
-            val resolution = 156543.03392 *
+            // Convert *compact on-screen pixel length* into metres. Zooming never
+            // creates a massive triangle across most of the screen.
+            val scaleMetersPerPixel = 156543.03392 *
                 cos(Math.toRadians(point.latitude)).coerceAtLeast(0.01) /
                 2.0.pow(map?.cameraPosition?.zoom ?: 13.0)
-            val px = kotlin.math.min(mapView.width, mapView.height)
-                .coerceAtLeast(dp(320)).toDouble()
-            val length = (resolution * px * 0.39).coerceIn(30.0, 800000.0)
+            val shortestSide = kotlin.math.min(mapView.width, mapView.height)
+                .coerceAtLeast(dp(250)).toDouble()
+            val px = kotlin.math.min(dp(122).toDouble(), shortestSide * .22)
+            val length = (scaleMetersPerPixel * px).coerceIn(12.0, 250000.0)
             val origin = Point.fromLngLat(point.longitude, point.latitude)
-            val outline = listOf(origin) +
-                (-38..38 step 4).map {
-                    geoPoint(point.latitude, point.longitude, length,
-                        headingDegrees.toDouble() + it)
-                } + origin
-            val border = Feature.fromGeometry(LineString.fromLngLats(outline))
-            val ray = Feature.fromGeometry(LineString.fromLngLats(listOf(origin,
-                geoPoint(point.latitude, point.longitude, length * 1.07,
-                    headingDegrees.toDouble()))))
+            val angles = (-23..23 step 2).map { headingDegrees.toDouble() + it }
+            val arc = angles.map {
+                geoPoint(point.latitude, point.longitude, length, it)
+            }
+            val fan = listOf(origin) + arc + origin
+            val nearArc = angles.map {
+                geoPoint(point.latitude, point.longitude, length * 0.48, it)
+            }
+            val nearFan = listOf(origin) + nearArc + origin
+            val ray = listOf(origin, geoPoint(point.latitude, point.longitude,
+                length * 0.98, headingDegrees.toDouble()))
+            (map?.style?.getSource("heading-cone") as? GeoJsonSource)?.setGeoJson(
+                FeatureCollection.fromFeatures(arrayOf(
+                    Feature.fromGeometry(Polygon.fromLngLats(listOf(fan)))
+                )))
+            (map?.style?.getSource("heading-near") as? GeoJsonSource)?.setGeoJson(
+                FeatureCollection.fromFeatures(arrayOf(
+                    Feature.fromGeometry(Polygon.fromLngLats(listOf(nearFan)))
+                )))
             (map?.style?.getSource("heading-border") as? GeoJsonSource)?.setGeoJson(
-                FeatureCollection.fromFeatures(arrayOf(border)))
+                FeatureCollection.fromFeatures(arrayOf(
+                    Feature.fromGeometry(LineString.fromLngLats(arc))
+                )))
             (map?.style?.getSource("heading-ray") as? GeoJsonSource)?.setGeoJson(
-                FeatureCollection.fromFeatures(arrayOf(ray)))
+                FeatureCollection.fromFeatures(arrayOf(
+                    Feature.fromGeometry(LineString.fromLngLats(ray))
+                )))
         } else {
-            (map?.style?.getSource("heading-border") as? GeoJsonSource)
-                ?.setGeoJson(emptyFeatures())
-            (map?.style?.getSource("heading-ray") as? GeoJsonSource)
-                ?.setGeoJson(emptyFeatures())
+            for (source in listOf("heading-cone", "heading-near",
+                "heading-border", "heading-ray")) {
+                (map?.style?.getSource(source) as? GeoJsonSource)?.setGeoJson(emptyFeatures())
+            }
         }
         val site = servingSite
         val line = if (point == null || site == null) emptyFeatures() else
@@ -2133,9 +2117,8 @@ class MainActivity : Activity(), SensorEventListener {
             if (nearest.mobile) "Сотовая связь отмечена в OSM" else "Назначение вышки не подтверждено",
             nearest.technology?.let { "Технологии: " + it },
             nearest.height?.let { "Высота: " + it },
-            "Расстояние от " +
-                if (manualPoint != null) "ручной точки: " + distance
-                else "GPS: " + distance,
+            "Расстояние: " + distance +
+                if (manualPoint != null) " · от ручной точки" else " · от GPS",
             String.format(Locale.US, "Координаты: %.6f, %.6f", nearest.latitude, nearest.longitude),
             "База: " + nearest.source,
             "Источник: " + nearest.url
