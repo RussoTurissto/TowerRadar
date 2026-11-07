@@ -192,6 +192,7 @@ class CellMonitor(
         } catch (_: Exception) { /* no cell identity access; signal remains available */ }
     }
 
+    @SuppressLint("MissingPermission")
     private fun dispatchSignal(signal: SignalStrength) {
         if (!active) return
         val tm = manager ?: return
@@ -247,6 +248,7 @@ class CellMonitor(
         else mainHandler.post { if (active) signalListener(reading) }
     }
 
+    @SuppressLint("MissingPermission")
     private fun dispatch(cells: List<CellInfo>?) {
         if (!active || !canReadCellDetails()) return
         if (cells.isNullOrEmpty()) return // modem throttling must not erase a useful reading
@@ -273,6 +275,7 @@ class CellMonitor(
         private fun value(v: Int): Int? = v.takeIf { it >= 0 && it < Int.MAX_VALUE }
         private fun bands(v: IntArray): List<Int> = v.filter { it > 0 && it < 200 }.distinct()
 
+        @SuppressLint("MissingPermission")
         fun parse(cell: CellInfo, operator: String, subId: Int): ServingCell? {
             val registered = cell.isRegistered
             return when (cell) {
@@ -319,6 +322,7 @@ class CellMonitor(
         }
 
         @android.annotation.TargetApi(29)
+        @SuppressLint("MissingPermission")
         private fun parseNr(cell: CellInfo, operator: String, subId: Int): ServingCell? {
             val nr = cell as? CellInfoNr ?: return null
             val id = nr.cellIdentity as? CellIdentityNr ?: return null
