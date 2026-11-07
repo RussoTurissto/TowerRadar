@@ -8,7 +8,11 @@ data class TowerSite(
     val id: String, val latitude: Double, val longitude: Double,
     val name: String?, val operator: String?, val mobile: Boolean,
     val technology: String?, val height: String?, val url: String,
-    val source: String = "OpenStreetMap"
+    val source: String = "OpenStreetMap",
+    val samples: Int? = null,
+    val estimatedRangeMeters: Int? = null,
+    val averageSignalDbm: Int? = null,
+    val extraInfo: String? = null
 )
 
 /** Calculations independent of the Android UI. OSM positions do not imply a specific serving cell. */
@@ -82,7 +86,13 @@ object TowerData {
                 mobile = mobile,
                 technology = tags.optString("technology:mobile_phone").takeIf { it.isNotBlank() },
                 height = tags.optString("height").takeIf { it.isNotBlank() },
-                url = "https://www.openstreetmap.org/$type/$number"
+                url = "https://www.openstreetmap.org/$type/$number",
+                extraInfo = listOfNotNull(
+                    tags.optString("ref").takeIf { it.isNotBlank() }?.let { "Обозначение: " + it },
+                    tags.optString("frequency").takeIf { it.isNotBlank() }?.let { "Частота: " + it },
+                    tags.optString("antenna:type").takeIf { it.isNotBlank() }?.let { "Тип антенны: " + it },
+                    tags.optString("tower:type").takeIf { it.isNotBlank() }?.let { "Тип конструкции: " + it }
+                ).joinToString(" · ").takeIf { it.isNotBlank() }
             )
         }
         return result.distinctBy { it.id }
