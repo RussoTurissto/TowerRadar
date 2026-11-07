@@ -376,7 +376,11 @@ class MainActivity : Activity(), SensorEventListener {
             )
             .setPositiveButton("Войти через Яндекс ID") { _, _ ->
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://developer.tech.yandex.ru/"))
-                try { startActivity(intent) } catch (_: Exception) {
+                try {
+                    startActivity(intent)
+                    getPreferences(Context.MODE_PRIVATE).edit()
+                        .putBoolean("yandex_return_hint", true).apply()
+                } catch (_: Exception) {
                     Toast.makeText(this, "Нет приложения для открытия браузера", Toast.LENGTH_LONG).show()
                 }
             }
@@ -1623,6 +1627,20 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onResume() {
         super.onResume()
         mapView.onResume()
+        val prefs = getPreferences(Context.MODE_PRIVATE)
+        if (prefs.getBoolean("yandex_return_hint", false)) {
+            prefs.edit().remove("yandex_return_hint").apply()
+            rootView.post {
+                if (!isFinishing && !isDestroyed) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Яндекс Карты · ключ Tiles API")
+                        .setMessage("Если подключили Tiles API и скопировали ключ, нажмите «Вставить ключ». " +
+                            "Если ещё нет — вернитесь в кабинет Яндекса через настройки.")
+                        .setPositiveButton("Вставить ключ") { _, _ -> importYandexKeyFromClipboard() }
+                        .setNegativeButton("Позже", null).show()
+                }
+            }
+        }
         headingSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         if (hasLocation()) startLocationUpdates()
         if (cellMonitor.hasPermission()) {
