@@ -33,7 +33,7 @@ data class ServingCell(
     val bandwidthKhz: Int? = null,
     val registered: Boolean = true
 ) {
-    val identity: String get() = "$" + "mcc/$" + "mnc/$" + "area/$" + "cellId/$" + "network"
+    val identity: String get() = listOf(mcc, mnc, area, cellId, network).joinToString("/")
     val validId: Boolean get() = mcc in 1..999 && mnc in 0..999 &&
         area >= 0 && cellId > 0L
     val validDbm: Boolean get() = dbm != null && dbm in -150..-20
