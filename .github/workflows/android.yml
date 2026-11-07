@@ -32,25 +32,64 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Unit tests, lint and debug APK
-        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
-      - name: Verify APK signature and SHA256
+      - name: Unit tests, lint and unsigned release APK
+        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
+      - name: Sign APK with permanent TowerRadar certificate and verify fingerprint
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          TOWERRADAR_KEYSTORE_BASE64: ${{ secrets.TOWERRADAR_KEYSTORE_BASE64 }}
+          TOWERRADAR_STORE_PASSWORD: ${{ secrets.TOWERRADAR_STORE_PASSWORD }}
+          TOWERRADAR_KEY_PASSWORD: ${{ secrets.TOWERRADAR_KEY_PASSWORD }}
+          TOWERRADAR_KEY_ALIAS: ${{ secrets.TOWERRADAR_KEY_ALIAS }}
         run: |
-          mkdir -p checks
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk > checks/signature.txt
-          sha256sum app/build/outputs/apk/debug/app-debug.apk > checks/sha256.txt
-      - name: Upload APK
+          set -euo pipefail
+          for var in TOWERRADAR_KEYSTORE_BASE64 TOWERRADAR_STORE_PASSWORD TOWERRADAR_KEY_PASSWORD TOWERRADAR_KEY_ALIAS; do
+            test -n "${!var}" || { echo "Missing required signing secret: $var" >&2; exit 1; }
+          done
+          umask 077
+          keystore="$RUNNER_TEMP/towerradar-release.jks"
+          trap 'rm -f "$RUNNER_TEMP/towerradar-release.jks" "$RUNNER_TEMP/towerradar-aligned.apk"' EXIT
+          printf '%s' "$TOWERRADAR_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          test -s "$keystore"
+          mkdir -p signed checks
+          unsigned="app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -s "$unsigned"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$unsigned" "$RUNNER_TEMP/towerradar-aligned.apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks "$keystore" \
+            --ks-key-alias "$TOWERRADAR_KEY_ALIAS" \
+            --ks-pass env:TOWERRADAR_STORE_PASSWORD \
+            --key-pass env:TOWERRADAR_KEY_PASSWORD \
+            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+            --out signed/towerradar-signed.apk "$RUNNER_TEMP/towerradar-aligned.apk"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -p 4 signed/towerradar-signed.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs signed/towerradar-signed.apk > checks/signature.txt
+          grep -Fq 'Verified using v2 scheme (APK Signature Scheme v2): true' checks/signature.txt
+          expected="$(keytool -exportcert -keystore "$keystore" -alias "$TOWERRADAR_KEY_ALIAS" -storepass:env TOWERRADAR_STORE_PASSWORD | sha256sum | awk '{print $1}')"
+          actual="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' checks/signature.txt | head -n 1 | tr '[:upper:]' '[:lower:]')"
+          test -n "$expected" && test "$actual" = "$expected" || {
+            echo "APK signer certificate DOES NOT match permanent keystore" >&2
+            exit 1
+          }
+          printf '%s\n' "$expected" > checks/certificate-sha256.txt
+          sha256sum signed/towerradar-signed.apk > checks/sha256.txt
+          echo "Verified permanent TowerRadar certificate SHA-256: $expected" >> "$GITHUB_STEP_SUMMARY"
+          echo "Signed APK SHA-256: $(awk '{print $1}' checks/sha256.txt)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload permanently signed APK
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
-          name: TowerRadar-debug-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: TowerRadar-signed-APK
+          path: signed/towerradar-signed.apk
           if-no-files-found: error
           retention-days: 30
-      - name: Upload APK signature report
+      - name: Upload signature validation report
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: TowerRadar-signature
           path: checks/
+          if-no-files-found: error
           retention-days: 30
       - name: Upload diagnostics on error
         if: failure()
