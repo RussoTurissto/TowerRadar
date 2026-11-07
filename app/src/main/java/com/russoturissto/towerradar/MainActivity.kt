@@ -79,6 +79,9 @@ import kotlin.math.PI
 class MainActivity : Activity(), SensorEventListener {
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var mapView: MapView
+    private lateinit var locationFusion: LocationFusion
+    private val cellExecutor = Executors.newSingleThreadExecutor()
+    private lateinit var gpsLabel: TextView
     private lateinit var cellMonitor: CellMonitor
     private var servingCell: ServingCell? = null
     private var servingSite: TowerSite? = null
@@ -598,6 +601,7 @@ class MainActivity : Activity(), SensorEventListener {
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         headingSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        locationFusion = LocationFusion(this, ::showLocation)
         cellMonitor = CellMonitor(this) { updated -> updateServingCell(updated) }
         createScreen()
         mapView.onCreate(state)
@@ -678,6 +682,7 @@ class MainActivity : Activity(), SensorEventListener {
         gpsRefresh.setOnClickListener {
             if (!manualCenter) {
                 startLocationUpdates()
+                locationFusion.refresh()
                 status.text = "Уточняем местоположение через GPS и Wi-Fi…"
             } else status.text = "Активна ручная геопозиция. Для GPS нажмите кнопку ◎."
         }
@@ -690,6 +695,8 @@ class MainActivity : Activity(), SensorEventListener {
         header.addView(settingsButton, LinearLayout.LayoutParams(dp(43), dp(42)))
         status = text("Определяем местоположение…", 12f, palette.secondary)
         panel.addView(status)
+        gpsLabel = text("GPS / Wi-Fi: ожидаем координаты", 11f, palette.secondary)
+        panel.addView(gpsLabel)
         mapStatus = text("Выбираем доступный сервер карты…", 11f, palette.secondary)
         panel.addView(mapStatus)
 
@@ -835,23 +842,9 @@ class MainActivity : Activity(), SensorEventListener {
         }
         refresh.setOnClickListener { load(force = true) }
         searchHere.setOnClickListener {
-            center = map?.cameraPosition?.target
-            manualCenter = true
-            load(force = true)
+            map?.cameraPosition?.target?.let(::setManualPosition)
         }
-        locate.setOnClickListener {
-            manualCenter = false
-            val current = location
-            if (current == null) {
-                askLocation()
-                status.text = "GPS недоступен. Переместите карту и нажмите «Искать здесь»."
-            } else {
-                val newCenter = LatLng(current.latitude, current.longitude)
-                center = newCenter
-                moveCamera(newCenter)
-                load(force = false)
-            }
-        }
+        locate.setOnClickListener { useAutomaticPosition() }
     }
 
     private fun updateOperatorChoices() {
@@ -877,43 +870,70 @@ class MainActivity : Activity(), SensorEventListener {
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     private fun askLocation() {
-        if (hasLocation()) startLocationUpdates()
-        else {
-            requestPermissions(arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION
-            ), 101)
-            status.text = "Разрешите геолокацию или воспользуйтесь кнопкой «Искать здесь»."
+        val permissions = listOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.READ_PHONE_STATE
+        ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (permissions.isNotEmpty()) {
+            // Android 12+ requires FINE and COARSE together, even if COARSE was previously granted.
+            val requested = if (Manifest.permission.ACCESS_FINE_LOCATION in permissions)
+                listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION,
+                    Manifest.permission.READ_PHONE_STATE)
+            else permissions
+            requestPermissions(requested.distinct().toTypedArray(), 101)
+            status.text = "Для точного GPS и информации о соте разрешите доступ к местоположению и телефону."
+        } else {
+            startLocationUpdates()
+            cellMonitor.start(getPreferences(Context.MODE_PRIVATE).getInt("sim_id", -1))
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun startLocationUpdates() {
-        if (!hasLocation() || listening) return
-        val enabled = locationManager.getProviders(true)
-        for (provider in listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)) {
-            if (provider !in enabled) continue
-            try {
-                locationManager.getLastKnownLocation(provider)?.let(::showLocation)
-                locationManager.requestLocationUpdates(provider, 10000L, 50f, listener, Looper.getMainLooper())
-                listening = true
-            } catch (_: SecurityException) {
-            } catch (_: IllegalArgumentException) {
+        if (!hasLocation()) return
+        if (!listening) {
+            val enabled = locationManager.getProviders(true)
+            for (provider in listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)) {
+                if (provider !in enabled) continue
+                try {
+                    locationManager.getLastKnownLocation(provider)?.let(::showLocation)
+                    locationManager.requestLocationUpdates(provider, 2000L, 0f,
+                        listener, Looper.getMainLooper())
+                    listening = true
+                } catch (_: SecurityException) {
+                } catch (_: IllegalArgumentException) {
+                }
             }
         }
-        if (!listening) status.text = "Геолокация выключена. Выберите центр карты вручную."
+        locationFusion.start()
+        if (!listening) status.text = "Геолокация отключена. Можно установить точку вручную."
     }
 
-    private fun showLocation(newLocation: Location) {
+    private fun showLocation(fix: Location) {
+        if (!fix.latitude.isFinite() || !fix.longitude.isFinite() ||
+            fix.latitude !in -90.0..90.0 || fix.longitude !in -180.0..180.0) return
+        val ageMs = if (fix.elapsedRealtimeNanos > 0L)
+            (SystemClock.elapsedRealtimeNanos() - fix.elapsedRealtimeNanos) / 1000000L
+        else System.currentTimeMillis() - fix.time
+        if (ageMs !in 0L..120000L) return // Never show a cached old fix as fresh.
         val old = location
-        if (old != null && newLocation.time + 1000L < old.time) return
-        location = newLocation
+        if (old != null && fix.elapsedRealtimeNanos < old.elapsedRealtimeNanos) return
+        if (old != null && fix.hasAccuracy() && old.hasAccuracy() &&
+            fix.accuracy > old.accuracy * 2f &&
+            (fix.elapsedRealtimeNanos - old.elapsedRealtimeNanos) < 9000000000L) return
+        location = fix
+        gpsLabel.text = if (fix.hasAccuracy()) {
+            val accuracy = fix.accuracy.toInt()
+            "GPS / Wi-Fi: ±" + accuracy + " м · " + fix.provider +
+                if (accuracy > 70) " · низкая точность" else " · уточняется"
+        } else "GPS / Wi-Fi: точность не сообщена · " + fix.provider
+        gpsLabel.setTextColor(
+            if (fix.hasAccuracy() && fix.accuracy > 70f) Color.rgb(188, 98, 42) else palette.secondary
+        )
         updateDot()
-        if (status.text.toString().contains("Геолокация выключена") ||
-            status.text.toString().contains("Определяем местоположение")) {
-            status.text = "Геопозиция найдена · точность " + newLocation.accuracy.toInt() + " м"
-        }
         if (manualCenter) return
-        val point = LatLng(newLocation.latitude, newLocation.longitude)
+        val point = LatLng(fix.latitude, fix.longitude)
         center = point
         if (!initiallyCentered) moveCamera(point)
         val recent = System.currentTimeMillis() - lastFetchTime < 90000L
@@ -1141,7 +1161,7 @@ class MainActivity : Activity(), SensorEventListener {
                 (0..36).map { index -> index * 10.0 })
         } ?: emptyFeatures()
         (map?.style?.getSource("gps-accuracy") as? GeoJsonSource)?.setGeoJson(accuracy)
-        val sector = if (showCone && point != null) {
+        val sector = if (showCone && headingSensor != null && point != null) {
             val headings = (-35..35 step 5).map { headingDegrees.toDouble() + it }
             val ring = listOf(Point.fromLngLat(point.longitude, point.latitude)) +
                 headings.map { geoPoint(point.latitude, point.longitude, 600.0, it) } +
@@ -1205,6 +1225,11 @@ class MainActivity : Activity(), SensorEventListener {
         if (requestCode == 101) {
             if (hasLocation()) startLocationUpdates()
             else status.text = "Геолокация запрещена. Можно искать в центре карты."
+            if (cellMonitor.hasPermission()) {
+                cellMonitor.start(getPreferences(Context.MODE_PRIVATE).getInt("sim_id", -1))
+            } else {
+                cellStatus.text = "Для определения обслуживающей соты нужны точная геопозиция и доступ к телефону."
+            }
         }
     }
     override fun onStart() { super.onStart(); mapView.onStart() }
@@ -1213,13 +1238,28 @@ class MainActivity : Activity(), SensorEventListener {
         mapView.onResume()
         headingSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
         if (hasLocation()) startLocationUpdates()
+        if (cellMonitor.hasPermission()) {
+            cellMonitor.start(getPreferences(Context.MODE_PRIVATE).getInt("sim_id", -1))
+        }
+        if (headingSensor == null) {
+            headingView.text = "Компас недоступен"
+            headingView.contentDescription = "На устройстве отсутствует датчик ориентации"
+        }
     }
-    override fun onPause() { sensorManager.unregisterListener(this); mapView.onPause(); super.onPause() }
+    override fun onPause() {
+        sensorManager.unregisterListener(this)
+        cellMonitor.stop()
+        locationFusion.stop()
+        mapView.onPause()
+        super.onPause()
+    }
     override fun onStop() {
         if (listening) {
             locationManager.removeUpdates(listener)
             listening = false
         }
+        locationFusion.stop()
+        cellMonitor.stop()
         mapView.onStop()
         super.onStop()
     }
@@ -1230,6 +1270,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
     override fun onDestroy() {
         executor.shutdownNow()
+        cellExecutor.shutdownNow()
         mapView.onDestroy()
         super.onDestroy()
     }
