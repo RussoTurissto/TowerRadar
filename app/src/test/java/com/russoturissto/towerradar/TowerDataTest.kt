@@ -37,6 +37,21 @@ class TowerDataTest {
         assertEquals(1, sites.size)
         assertNull(sites[0].operator)
     }
+    @Test fun russianProvidersNeedKeys() {
+        val yandex = MapSources.providers.first { it.id == "yandex" }
+        val twoGis = MapSources.providers.first { it.id == "2gis" }
+        assertTrue(MapSources.tileTemplate(yandex, "secret123").contains("lang=ru_RU"))
+        assertTrue(MapSources.tileTemplate(yandex, "secret123").contains("projection=web_mercator"))
+        assertTrue(MapSources.tileTemplate(twoGis, "test").contains("online_sd"))
+        assertTrue(MapSources.tileTemplate(twoGis, "test").contains("key=test"))
+        assertTrue(MapSources.unkeyed().all { it.keyPref == null })
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun russianProvidersRejectMissingKey() {
+        MapSources.tileTemplate(MapSources.providers.first { it.id == "yandex" })
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun radiusMustBeAllowed() {
         TowerData.query(52.37, 4.9, 200)
