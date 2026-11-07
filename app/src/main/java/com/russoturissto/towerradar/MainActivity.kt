@@ -364,7 +364,7 @@ class MainActivity : Activity(), SensorEventListener {
      * or attempt to scrape Yandex's dashboard. Clipboard is read only on explicit tap.
      */
     private fun showYandexSetup() {
-        AlertDialog.Builder(this)
+        KhakiDialogBuilder(this, palette)
             .setTitle("Яндекс Карты · подключение")
             .setMessage(
                 "1. Откройте официальный кабинет Яндекса и войдите через Яндекс ID.\n" +
@@ -397,7 +397,7 @@ class MainActivity : Activity(), SensorEventListener {
             clipboard.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim().orEmpty()
         } catch (_: Exception) { "" }
         if (!key.matches(Regex("[a-zA-Z0-9._-]{8,256}"))) {
-            AlertDialog.Builder(this).setTitle("Ключ не найден")
+            KhakiDialogBuilder(this, palette).setTitle("Ключ не найден")
                 .setMessage("Скопируйте ключ продукта Tiles API из кабинета Яндекса. " +
                     "Затем вернитесь в TowerRadar и нажмите «Вставить ключ».")
                 .setPositiveButton("Повторить") { _, _ -> showYandexSetup() }
@@ -425,7 +425,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         val address = if (provider.id == "yandex")
             "developer.tech.yandex.ru (Tiles API)" else "platform.2gis.ru (Raster Tiles API)"
-        AlertDialog.Builder(this)
+        KhakiDialogBuilder(this, palette)
             .setTitle(provider.name)
             .setMessage(
                 "Для этой карты с русскими подписями нужен личный ключ. " +
@@ -467,13 +467,13 @@ class MainActivity : Activity(), SensorEventListener {
             "Дополнительные соты OpenCellID",
             "Сектор направления: " + if (showCone) "Включён" else "Выключен"
         )
-        AlertDialog.Builder(this).setTitle("Настройки · TowerRadar")
+        KhakiDialogBuilder(this, palette).setTitle("Настройки · TowerRadar")
             .setItems(items) { _, selected ->
                 when (selected) {
                     0 -> selectTheme()
                     1 -> showPositionOptions()
                     2 -> selectSim()
-                    3 -> AlertDialog.Builder(this).setTitle("Картографические ключи")
+                    3 -> KhakiDialogBuilder(this, palette).setTitle("Картографические ключи")
                         .setItems(arrayOf("Яндекс Карты", "2ГИС")) { _, index ->
                             if (index == 0) showYandexSetup()
                             else requestMapKey(MapSources.providers.first { it.id == "2gis" })
@@ -493,7 +493,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun selectTheme() {
         val prefs = getPreferences(Context.MODE_PRIVATE)
         val current = prefs.getString("app_theme", KhakiTheme.SYSTEM)
-        AlertDialog.Builder(this).setTitle("Тема оформления")
+        KhakiDialogBuilder(this, palette).setTitle("Тема оформления")
             .setSingleChoiceItems(KhakiTheme.names,
                 KhakiTheme.values.indexOf(current).coerceAtLeast(0)) { dialog, selected ->
                 prefs.edit().putString("app_theme", KhakiTheme.values[selected]).apply()
@@ -504,7 +504,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun selectSim() {
         if (!cellMonitor.hasPermission()) {
-            AlertDialog.Builder(this).setTitle("Доступ к SIM")
+            KhakiDialogBuilder(this, palette).setTitle("Доступ к SIM")
                 .setMessage("Чтобы определить активную соту и уровень сигнала, нужен доступ к телефону и точному местоположению.")
                 .setPositiveButton("Разрешить") { _, _ -> askLocation() }
                 .setNegativeButton("Отмена", null).show()
@@ -513,7 +513,7 @@ class MainActivity : Activity(), SensorEventListener {
         val options = cellMonitor.availableSubscriptions()
         val labels = arrayOf("Автоматически · SIM для интернета") +
             options.map { it.second + " (SIM ID " + it.first + ")" }
-        AlertDialog.Builder(this).setTitle("Отслеживать сеть SIM")
+        KhakiDialogBuilder(this, palette).setTitle("Отслеживать сеть SIM")
             .setItems(labels) { _, i ->
                 val sub = if (i == 0) SubscriptionManager.INVALID_SUBSCRIPTION_ID
                     else options[i - 1].first
@@ -527,7 +527,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun showPositionOptions() {
-        AlertDialog.Builder(this).setTitle("Моя геопозиция")
+        KhakiDialogBuilder(this, palette).setTitle("Моя геопозиция")
             .setItems(arrayOf("Установить в центре карты", "Ввести координаты",
                 "Вернуться к автоматической GPS")) { _, selection ->
                 when (selection) {
@@ -550,7 +550,7 @@ class MainActivity : Activity(), SensorEventListener {
                 setSelectAllOnFocus(true)
             }
         }
-        AlertDialog.Builder(this).setTitle("Геопозиция вручную")
+        KhakiDialogBuilder(this, palette).setTitle("Геопозиция вручную")
             .setMessage("Введите широту и долготу через запятую. В ручном режиме GPS не перемещает выбранную точку.")
             .setView(input)
             .setPositiveButton("Сохранить") { _, _ ->
@@ -616,7 +616,7 @@ class MainActivity : Activity(), SensorEventListener {
             )
             metrics.joinToString("\n")
         }
-        AlertDialog.Builder(this).setTitle("Подключённая сеть")
+        KhakiDialogBuilder(this, palette).setTitle("Подключённая сеть")
             .setMessage(description).setPositiveButton("Закрыть", null).show()
     }
 
@@ -627,7 +627,7 @@ class MainActivity : Activity(), SensorEventListener {
             setText(getPreferences(Context.MODE_PRIVATE).getString("opencellid_key", ""))
             setSelectAllOnFocus(true)
         }
-        AlertDialog.Builder(this)
+        KhakiDialogBuilder(this, palette)
             .setTitle("Дополнительные соты OpenCellID")
             .setMessage(
                 "Необязательный ключ для загрузки приблизительных позиций сот в радиусе около 1 км. " +
@@ -733,8 +733,22 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
     private fun choice(labels: List<String>): ArrayAdapter<String> =
-        ArrayAdapter(this, android.R.layout.simple_spinner_item, labels).also {
-            it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, labels) {
+            private fun itemView(position: Int, dropDown: Boolean): TextView {
+                return text(getItem(position).orEmpty(), 13f, palette.text).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(10), dp(7), dp(8), dp(7))
+                    maxLines = if (dropDown) 2 else 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                    minHeight = dp(if (dropDown) 47 else 43)
+                    background = rounded(
+                        if (dropDown) palette.elevated else palette.surface, 10)
+                }
+            }
+            override fun getView(position: Int, convertView: View?,
+                parent: android.view.ViewGroup): View = itemView(position, false)
+            override fun getDropDownView(position: Int, convertView: View?,
+                parent: android.view.ViewGroup): View = itemView(position, true)
         }
     private fun row(): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -1632,7 +1646,7 @@ class MainActivity : Activity(), SensorEventListener {
             prefs.edit().remove("yandex_return_hint").apply()
             rootView.post {
                 if (!isFinishing && !isDestroyed) {
-                    AlertDialog.Builder(this)
+                    KhakiDialogBuilder(this, palette)
                         .setTitle("Яндекс Карты · ключ Tiles API")
                         .setMessage("Если подключили Tiles API и скопировали ключ, нажмите «Вставить ключ». " +
                             "Если ещё нет — вернитесь в кабинет Яндекса через настройки.")
