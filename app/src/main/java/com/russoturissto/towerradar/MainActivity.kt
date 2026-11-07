@@ -100,6 +100,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var systemBottomInset = 0
     private var beamBrightness = 85
     private var sectorBrightness = 35
+    private var pendingEncryptedBackup: ByteArray? = null
     private val apiChecks = mutableMapOf<String, ApiProbe>()
     private val checkingApi = mutableSetOf<String>()
     private val googleSessions = mutableMapOf<String, GoogleTileSession>()
@@ -614,7 +615,8 @@ class MainActivity : Activity(), SensorEventListener {
             "Подключения API: Яндекс · 2ГИС · Google · OpenCellID",
             "Индикатор направления: " + if (showCone) "Включён" else "Выключен",
             "Яркость луча и сектора: раздельная настройка",
-            "Кеш карт: лимит " + mapTileCache.limitMb() + " МБ"
+            "Кеш карт: лимит " + mapTileCache.limitMb() + " МБ",
+            "Резервная копия: защищённый экспорт и восстановление"
         )
         KhakiDialogBuilder(this, palette).setTitle("Настройки · TowerRadar")
             .setItems(items) { _, selected ->
@@ -631,8 +633,123 @@ class MainActivity : Activity(), SensorEventListener {
                     }
                     5 -> showDirectionBrightness()
                     6 -> showCacheSettings()
+                    7 -> showBackupMenu()
                 }
             }.setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun showBackupMenu() {
+        KhakiDialogBuilder(this, palette).setTitle("Резервная копия настроек")
+            .setMessage("API-ключи, ручная точка и параметры приложения сохраняются " +
+                "только в зашифрованном файле AES-256-GCM. " +
+                "Придумайте отдельный пароль длиной не меньше 12 символов. " +
+                "Ни пароль, ни ключи не передаются в GitHub или разработчику. " +
+                "Подпись APK .jks здесь НЕ экспортируется.")
+            .setItems(arrayOf("Экспортировать зашифрованную копию",
+                "Восстановить из зашифрованной копии")) { _, i ->
+                if (i == 0) prepareEncryptedBackup()
+                else try {
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                    }
+                    startActivityForResult(intent, 6102)
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Не удалось выбрать файл", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun backupPasswordInput(hint: String): EditText = EditText(this).apply {
+        this.hint = hint
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        setSingleLine(true)
+    }
+
+    private fun prepareEncryptedBackup() {
+        val field = backupPasswordInput("Пароль не менее 12 символов")
+        KhakiDialogBuilder(this, palette).setTitle("Зашифровать настройки")
+            .setMessage("Сохраните пароль отдельно. Без него резервную копию " +
+                "восстановить невозможно. Не используйте пароль от GitHub.")
+            .setView(field).setPositiveButton("Выбрать файл") { _, _ ->
+                val password = field.text.toString().toCharArray()
+                try {
+                    pendingEncryptedBackup = SettingsVault.encrypt(
+                        SettingsVault.capture(getPreferences(Context.MODE_PRIVATE)), password)
+                    field.text.clear()
+                    val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "application/octet-stream"
+                        putExtra(Intent.EXTRA_TITLE, "TowerRadar-settings.trbk")
+                    }
+                    startActivityForResult(intent, 6101)
+                } catch (e: Exception) {
+                    pendingEncryptedBackup = null
+                    Toast.makeText(this, e.message ?: "Ошибка экспорта",
+                        Toast.LENGTH_LONG).show()
+                } finally {
+                    password.fill('\u0000')
+                }
+            }.setNegativeButton("Отмена", null).show()
+    }
+
+    private fun restoreEncryptedBackup(bytes: ByteArray) {
+        val field = backupPasswordInput("Пароль резервной копии")
+        KhakiDialogBuilder(this, palette).setTitle("Восстановить настройки")
+            .setMessage("При восстановлении сохранённые настройки и API-ключи " +
+                "заменят текущие значения. Другие данные останутся без изменений.")
+            .setView(field).setPositiveButton("Восстановить") { _, _ ->
+                val password = field.text.toString().toCharArray()
+                try {
+                    val json = SettingsVault.decrypt(bytes, password)
+                    SettingsVault.restore(getPreferences(Context.MODE_PRIVATE), json)
+                    field.text.clear()
+                    Toast.makeText(this, "Настройки восстановлены", Toast.LENGTH_LONG).show()
+                    recreate()
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Ошибка пароля или повреждённый файл",
+                        Toast.LENGTH_LONG).show()
+                } finally {
+                    password.fill('\u0000')
+                }
+            }.setNegativeButton("Отмена", null).show()
+    }
+
+    @Deprecated("Deprecated by Android")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 6101) {
+            val bytes = pendingEncryptedBackup
+            pendingEncryptedBackup = null
+            if (resultCode != Activity.RESULT_OK || bytes == null) return
+            try {
+                val uri = data?.data ?: return
+                contentResolver.openOutputStream(uri, "w")?.use { it.write(bytes) }
+                    ?: error("Нет доступа к файлу")
+                Toast.makeText(this, "Зашифрованная копия сохранена", Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+                Toast.makeText(this, "Ошибка сохранения файла", Toast.LENGTH_LONG).show()
+            } finally { bytes.fill(0) }
+        } else if (requestCode == 6102 && resultCode == Activity.RESULT_OK) {
+            try {
+                val uri = data?.data ?: return
+                val content = java.io.ByteArrayOutputStream()
+                contentResolver.openInputStream(uri)?.use { input ->
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        if (content.size() + n > 500000) error("Слишком большой файл")
+                        content.write(buffer, 0, n)
+                    }
+                } ?: error("Нет доступа к файлу")
+                restoreEncryptedBackup(content.toByteArray())
+            } catch (_: Exception) {
+                Toast.makeText(this, "Не удалось прочитать резервную копию",
+                    Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun showCacheSettings() {
