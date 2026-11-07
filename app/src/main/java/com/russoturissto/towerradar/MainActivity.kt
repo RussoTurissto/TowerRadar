@@ -113,6 +113,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var fullScreenButton: Button
     private var sheetExpanded = false
     private var mapFullscreen = false
+    private lateinit var mapTileCache: MapTileCache
     private lateinit var mapView: MapView
     private lateinit var locationFusion: LocationFusion
     private val cellExecutor = Executors.newSingleThreadExecutor()
@@ -578,7 +579,8 @@ class MainActivity : Activity(), SensorEventListener {
             "SIM для отслеживания",
             "Подключения API: Яндекс · 2ГИС · Google · OpenCellID",
             "Индикатор направления: " + if (showCone) "Включён" else "Выключен",
-            "Яркость луча и сектора: раздельная настройка"
+            "Яркость луча и сектора: раздельная настройка",
+            "Кеш карт: лимит " + mapTileCache.limitMb() + " МБ"
         )
         KhakiDialogBuilder(this, palette).setTitle("Настройки · TowerRadar")
             .setItems(items) { _, selected ->
@@ -594,8 +596,51 @@ class MainActivity : Activity(), SensorEventListener {
                         updateOverlays()
                     }
                     5 -> showDirectionBrightness()
+                    6 -> showCacheSettings()
                 }
             }.setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun showCacheSettings() {
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Кеш карт · TowerRadar")
+            .setMessage(
+                "Загруженные при просмотре участки OSM и Яндекс Карт " +
+                "сохраняются автоматически, пока это разрешено правилами сервера. " +
+                "Для Яндекса предусмотрена очистка не позднее 29 дней. " +
+                "Google и 2ГИС не сохраняются на диск из-за ограничений поставщиков. " +
+                "При первом запуске этой версии старый кеш будет очищен для исправления " +
+                "качества Яндекса. \n\n" +
+                "Это не предварительное скачивание районов: вне сети карта отображает " +
+                "только ещё действительные сохранённые тайлы."
+            )
+            .setItems(arrayOf(
+                "Лимит: 100 МБ",
+                "Лимит: 250 МБ · рекомендуется",
+                "Лимит: 500 МБ",
+                "Очистить загруженные карты"
+            )) { _, selected ->
+                when (selected) {
+                    0, 1, 2 -> mapTileCache.changeLimit(
+                        MapTileCache.limitsMb[selected]
+                    ) { ok, message ->
+                        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                    }
+                    3 -> KhakiDialogBuilder(this, palette)
+                        .setTitle("Очистить кеш карт?")
+                        .setMessage("Ранее просмотренные участки могут потребовать " +
+                            "новой загрузки через интернет. Сохранённые ключи, " +
+                            "ручная геопозиция и другие настройки останутся.")
+                        .setPositiveButton("Очистить") { _, _ ->
+                            mapTileCache.clear { ok, message ->
+                                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                            }
+                        }
+                        .setNegativeButton("Отмена", null).show()
+                }
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
     }
 
     private fun sectorAlpha(): Float = 0.50f * sectorBrightness / 100f
@@ -1031,6 +1076,8 @@ class MainActivity : Activity(), SensorEventListener {
         beamBrightness = prefs.getInt("beam_brightness", 85).coerceIn(0, 100)
         sectorBrightness = prefs.getInt("sector_brightness", 35).coerceIn(0, 100)
         MapLibre.getInstance(this)
+        mapTileCache = MapTileCache(this)
+        mapTileCache.initialize()
         HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder()
                 .header("User-Agent", "TowerRadar/0.4.0 (+https://github.com/RussoTurissto/TowerRadar)").build())
