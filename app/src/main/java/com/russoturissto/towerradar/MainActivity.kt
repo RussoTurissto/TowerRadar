@@ -557,11 +557,16 @@ class MainActivity : Activity(), SensorEventListener {
                 getPreferences(Context.MODE_PRIVATE).edit()
                     .putString("opencellid_key", field.text.toString().trim()).apply()
                 lastFetch = null
+                requestedCellId = null
+                servingCell?.let(::updateServingCell)
                 load(force = true)
             }
             .setNeutralButton("Удалить") { _, _ ->
                 getPreferences(Context.MODE_PRIVATE).edit().remove("opencellid_key").apply()
                 lastFetch = null
+                requestedCellId = null
+                servingSite = null
+                servingCell?.let(::updateServingCell)
                 load(force = true)
             }
             .setNegativeButton("Отмена", null)
@@ -1074,6 +1079,7 @@ class MainActivity : Activity(), SensorEventListener {
                     lastFetchRadius = range
                     updateOperatorChoices()
                     showPins()
+                    servingCell?.let(::updateServingCell)
                     status.text = "Найдено: " + sites.size + " · " + range + " км · " +
                         if (cellError) "OpenCellID недоступен" else if (cells.isNotEmpty())
                             "OSM + OpenCellID (" + cells.size + " сот)"
@@ -1098,6 +1104,111 @@ class MainActivity : Activity(), SensorEventListener {
                     }
                 }
             }
+        }
+    }
+
+
+    /** Only a precisely matched radio-cell identifier may have a linked map marker. */
+    private fun updateServingCell(reading: ServingCell?) {
+        if (!::signalLabel.isInitialized) return
+        val previousId = servingCell?.identity
+        servingCell = reading
+        if (reading == null) {
+            signalLabel.text = "Сеть: данные соты недоступны"
+            signalDetails.text = "Нет измерения уровня сигнала"
+            cellStatus.text = if (cellMonitor.hasPermission())
+                "Нет зарегистрированной соты или модем ограничил доступ."
+            else "Разрешите точную геопозицию и доступ к телефону."
+            if (previousId != null) {
+                servingSite = null
+                updateOverlays()
+            }
+            showSignalBars(0)
+            return
+        }
+        if (reading.identity != previousId) {
+            servingSite = null
+            updateOverlays()
+        }
+        signalLabel.text = (if (reading.operator.isBlank()) "Мобильная сеть" else reading.operator) +
+            " · " + when (reading.network) {
+                "LTE" -> "4G LTE"
+                "NR" -> "5G NR"
+                "UMTS" -> "3G"
+                else -> reading.network
+            }
+        val values = listOfNotNull(
+            reading.dbm?.let { "$it dBm" },
+            reading.rsrp?.let { "RSRP $it dBm" },
+            reading.rsrq?.let { "RSRQ $it dB" },
+            reading.sinr?.let { "SINR " + String.format(Locale.US, "%.1f", it) + " dB" }
+        )
+        signalDetails.text = if (values.isEmpty()) "Модем не передал мощность сигнала"
+        else values.joinToString(" · ")
+        val quality = when (reading.level.coerceIn(0, 4)) {
+            0 -> "Очень слабый"
+            1 -> "Слабый"
+            2 -> "Средний"
+            3 -> "Хороший"
+            else -> "Отличный"
+        }
+        signalLabel.contentDescription = quality + " уровень сигнала; " + signalDetails.text
+        showSignalBars(reading.level + 1)
+        if (!reading.validId) {
+            cellStatus.text = "Сота зарегистрирована, но её идентификатор не раскрыт устройством."
+            return
+        }
+        val matching = sites.firstOrNull { it.id == "opencellid/" + reading.identity }
+        if (matching != null) {
+            servingSite = matching
+            cellStatus.text = "Сота " + reading.cellId + " · точка в OpenCellID (примерная)"
+            updateOverlays()
+            return
+        }
+        if (servingSite != null) {
+            cellStatus.text = "Сота " + reading.cellId + " · оценка OpenCellID, не физическая вышка"
+            return
+        }
+        val key = getPreferences(Context.MODE_PRIVATE)
+            .getString("opencellid_key", "").orEmpty()
+        if (key.isBlank()) {
+            cellStatus.text = "Сота " + reading.cellId +
+                " · для координат нужен ключ OpenCellID в настройках"
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (requestedCellId == reading.identity && now - cellRequestAt < 600000L) {
+            cellStatus.text = "Сота " + reading.cellId +
+                " · местоположение неизвестно (нет совпадения в OpenCellID)"
+            return
+        }
+        requestedCellId = reading.identity
+        cellRequestAt = now
+        cellStatus.text = "Сота " + reading.cellId + " · ищем координаты в OpenCellID…"
+        cellExecutor.execute {
+            val site = CellSources.lookup(key, reading)
+            runOnUiThread {
+                if (isDestroyed || isFinishing || servingCell?.identity != reading.identity) return@runOnUiThread
+                servingSite = site
+                cellStatus.text = if (site == null)
+                    "Сота " + reading.cellId + " · координаты в OpenCellID не найдены"
+                else "Сота " + reading.cellId + " · пунктир к примерной позиции OpenCellID"
+                updateOverlays()
+            }
+        }
+    }
+
+    private fun showSignalBars(count: Int) {
+        if (!::signalBars.isInitialized) return
+        val color = when (count) {
+            0, 1 -> Color.rgb(197, 77, 65)
+            2 -> Color.rgb(204, 133, 55)
+            3 -> Color.rgb(180, 169, 70)
+            else -> palette.olive
+        }
+        for (i in 0 until signalBars.childCount) {
+            signalBars.getChildAt(i).background =
+                rounded(if (i < count) color else palette.signalMuted, 3)
         }
     }
 
