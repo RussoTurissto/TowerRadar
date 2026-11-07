@@ -21,6 +21,7 @@ import android.telephony.SubscriptionManager
 import android.os.SystemClock
 import android.text.InputType
 import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -107,6 +108,8 @@ class MainActivity : Activity(), SensorEventListener {
     private var lastGoogleAttributionKey = ""
     private lateinit var rootView: FrameLayout
     private lateinit var sheetView: LinearLayout
+    private lateinit var yandexConnectButton: Button
+    private var consumingOutsidePanelGesture = false
     private lateinit var sheetExtra: ScrollView
     private lateinit var sheetHandle: TextView
     private lateinit var floatingRail: LinearLayout
@@ -402,6 +405,8 @@ class MainActivity : Activity(), SensorEventListener {
             return
         }
         choosingMap = true
+        provider.keyPref?.let { checkingApi.add(it) }
+        refreshYandexConnectButton()
         mapStatus.text = "Проверяем " + provider.name + "…"
         val point = activeUserPoint() ?: center ?: LatLng(49.0, 39.0)
         executor.execute {
@@ -751,6 +756,36 @@ class MainActivity : Activity(), SensorEventListener {
                 status.startsWith("⚠") -> Color.rgb(214, 158, 87)
                 else -> palette.secondary
             })
+        }
+        refreshYandexConnectButton()
+    }
+
+    private fun refreshYandexConnectButton() {
+        if (!::yandexConnectButton.isInitialized) return
+        val key = getPreferences(Context.MODE_PRIVATE)
+            .getString("map_key_yandex", "").orEmpty()
+        val state = PanelUiPolicy.yandexAction(
+            key.isNotBlank(),
+            checkingApi.contains("map_key_yandex"),
+            apiChecks["map_key_yandex"]?.connected
+        )
+        yandexConnectButton.visibility =
+            if (state == PanelUiPolicy.YandexAction.HIDDEN) View.GONE else View.VISIBLE
+        yandexConnectButton.isEnabled = state != PanelUiPolicy.YandexAction.WAIT
+        yandexConnectButton.text = when (state) {
+            PanelUiPolicy.YandexAction.CONNECT -> "Подключить Яндекс Карты"
+            PanelUiPolicy.YandexAction.VERIFY -> "Проверить подключение Яндекс Карт"
+            PanelUiPolicy.YandexAction.FIX -> "Исправить подключение Яндекс Карт"
+            PanelUiPolicy.YandexAction.WAIT -> "Проверяем Яндекс Карты…"
+            PanelUiPolicy.YandexAction.HIDDEN -> ""
+        }
+        yandexConnectButton.setOnClickListener {
+            when (state) {
+                PanelUiPolicy.YandexAction.CONNECT,
+                PanelUiPolicy.YandexAction.FIX -> showYandexSetup()
+                PanelUiPolicy.YandexAction.VERIFY -> verifyConnection("map_key_yandex")
+                else -> Unit
+            }
         }
     }
 
@@ -1385,13 +1420,11 @@ class MainActivity : Activity(), SensorEventListener {
         val prefId = getPreferences(Context.MODE_PRIVATE).getString("map_provider", "auto") ?: "auto"
         sourceSpinner.setSelection(MapSources.providers.indexOfFirst { it.id == prefId } + 1)
         controls.addView(sourceSpinner, LinearLayout.LayoutParams(-1, dp(46)))
-        val yandexButton = styledButton("Яндекс ID · подключить карты", 12f).apply {
-            contentDescription = "Войти в кабинет Яндекса и получить ключ Tiles API"
-            setOnClickListener { showYandexSetup() }
-        }
-        controls.addView(yandexButton, LinearLayout.LayoutParams(-1, dp(42)).apply {
+        yandexConnectButton = styledButton("Подключить Яндекс Карты", 12f)
+        controls.addView(yandexConnectButton, LinearLayout.LayoutParams(-1, dp(42)).apply {
             topMargin = dp(5)
         })
+        refreshYandexConnectButton()
         mapStatus = text("Выбираем доступный сервер карты…", 11f, palette.secondary)
         controls.addView(mapStatus)
         sourceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -1635,7 +1668,37 @@ class MainActivity : Activity(), SensorEventListener {
     @Deprecated("Deprecated by Android")
     override fun onBackPressed() {
         if (isChoosingCrosshair) finishCrosshairMode(false)
+        else if (sheetExpanded) expandSheet(false)
         else super.onBackPressed()
+    }
+
+    /**
+     * Consume the entire tap gesture when dismissing the expanded sheet.
+     * This prevents the same tap selecting a tower or moving the map.
+     * Bounds are obtained at event time, including during sheet animation.
+     */
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (consumingOutsidePanelGesture) {
+            if (event.actionMasked == MotionEvent.ACTION_UP ||
+                event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                consumingOutsidePanelGesture = false
+            }
+            return true
+        }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
+            ::sheetView.isInitialized && sheetView.isShown) {
+            val panelBounds = Rect()
+            sheetView.getGlobalVisibleRect(panelBounds)
+            val inside = panelBounds.contains(event.rawX.toInt(), event.rawY.toInt())
+            if (PanelUiPolicy.shouldCollapseOnOutsideTouch(
+                    sheetExpanded, mapFullscreen, isChoosingCrosshair, inside
+                )) {
+                consumingOutsidePanelGesture = true
+                expandSheet(false)
+                return true
+            }
+        }
+        return super.dispatchTouchEvent(event)
     }
 
     private fun setMapFullscreen(full: Boolean) {
