@@ -1,0 +1,57 @@
+name: Build Android APK
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Install Android SDK 35
+        run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools'
+      - name: Install Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Unit tests, lint and debug APK
+        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+      - name: Verify APK signature and SHA256
+        run: |
+          mkdir -p checks
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk > checks/signature.txt
+          sha256sum app/build/outputs/apk/debug/app-debug.apk > checks/sha256.txt
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: TowerRadar-debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload APK signature report
+        uses: actions/upload-artifact@v4
+        with:
+          name: TowerRadar-signature
+          path: checks/
+          retention-days: 30
+      - name: Upload diagnostics on error
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TowerRadar-build-diagnostics
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14

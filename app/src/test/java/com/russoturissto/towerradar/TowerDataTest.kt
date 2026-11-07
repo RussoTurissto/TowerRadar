@@ -1,0 +1,25 @@
+package com.russoturissto.towerradar
+
+import org.junit.Assert.*
+import org.junit.Test
+
+class TowerDataTest {
+    @Test fun distanceSamePoint() {
+        assertEquals(0.0, TowerData.distanceKm(52.37, 4.9, 52.37, 4.9), 0.000001)
+    }
+    @Test fun parisLondonDistance() {
+        assertTrue(TowerData.distanceKm(51.5074, -0.1278, 48.8566, 2.3522) in 340.0..350.0)
+    }
+    @Test fun operatorIsNotInvented() {
+        assertEquals("T2 / Tele2", TowerData.operator("Tele2"))
+        assertEquals("Vodafone", TowerData.operator("Vodafone"))
+        assertNull(TowerData.operator(" "))
+    }
+    @Test fun overpassUsesCorrectRadiusAndCoordinates() {
+        assertTrue(TowerData.query(52.37, 4.9, 5).contains("around:5000,52.370000,4.900000"))
+    }
+    @Test(expected = IllegalArgumentException::class)
+    fun radiusMustBeAllowed() {
+        TowerData.query(52.37, 4.9, 200)
+    }
+}
