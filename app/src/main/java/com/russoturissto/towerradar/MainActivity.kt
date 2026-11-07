@@ -6,6 +6,8 @@ import android.app.Activity
 import android.animation.ValueAnimator
 import android.content.ClipboardManager
 import android.view.MotionEvent
+import android.view.WindowInsets
+import kotlin.math.pow
 import android.widget.ScrollView
 import android.widget.Toast
 import android.app.AlertDialog
@@ -84,6 +86,16 @@ import kotlin.math.PI
 /** No background tracking. A search shares the selected coordinates with public Overpass. */
 class MainActivity : Activity(), SensorEventListener {
     private val executor = Executors.newSingleThreadExecutor()
+    private lateinit var topHeader: LinearLayout
+    private lateinit var crosshairReticle: CrosshairView
+    private lateinit var crosshairControls: LinearLayout
+    private lateinit var crosshairCoordinates: TextView
+    private var isChoosingCrosshair = false
+    private var crosshairStart: LatLng? = null
+    private var crosshairStartZoom = 12.5
+    private var systemTopInset = 0
+    private var systemBottomInset = 0
+    private var sectorIntensity = 1
     private lateinit var rootView: FrameLayout
     private lateinit var sheetView: LinearLayout
     private lateinit var sheetExtra: ScrollView
@@ -666,6 +678,11 @@ class MainActivity : Activity(), SensorEventListener {
         palette = KhakiTheme.palette(this, mode)
         window.statusBarColor = palette.canvas
         window.navigationBarColor = palette.canvas
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
+        }
         if (Build.VERSION.SDK_INT >= 26) {
             window.decorView.systemUiVisibility =
                 if (palette.dark) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or
@@ -681,6 +698,7 @@ class MainActivity : Activity(), SensorEventListener {
             manualCenter = true
         }
         showCone = prefs.getBoolean("show_cone", true)
+        sectorIntensity = prefs.getInt("sector_intensity", 1).coerceIn(0, 2)
         MapLibre.getInstance(this)
         HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder()
@@ -703,8 +721,17 @@ class MainActivity : Activity(), SensorEventListener {
             val saved = MapSources.providers.firstOrNull { it.id == savedId }
             if (saved == null) chooseBasemap() else useMapChoice(saved)
             ready.addOnMapClickListener { tapped ->
-                selectTower(tapped)
-                true
+                if (isChoosingCrosshair) {
+                    ready.animateCamera(CameraUpdateFactory.newLatLng(tapped), 250)
+                    true
+                } else {
+                    selectTower(tapped)
+                    true
+                }
+            }
+            ready.addOnCameraIdleListener {
+                updateOverlays()
+                if (isChoosingCrosshair) updateCrosshairCoordinates()
             }
         }
         askLocation()
@@ -769,6 +796,7 @@ class MainActivity : Activity(), SensorEventListener {
 
         // Small heading / GPS chip and always-reachable settings / full-screen controls.
         val header = row()
+        topHeader = header
         rootView.addView(header, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
             setMargins(dp(12), dp(10), dp(12), 0)
         })
@@ -1066,6 +1094,49 @@ class MainActivity : Activity(), SensorEventListener {
             setMargins(0, 0, dp(8), dp(91))
         })
 
+        // Crosshair mode is a separate, focused location picker: drag the map
+        // under the reticle, tap a desired point or zoom for precise placement.
+        crosshairReticle = CrosshairView(this).apply {
+            visibility = View.GONE
+            isClickable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        rootView.addView(crosshairReticle, FrameLayout.LayoutParams(
+            dp(95), dp(95), Gravity.CENTER
+        ))
+        crosshairControls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(palette.surface, 19)
+            elevation = dp(12).toFloat()
+            setPadding(dp(13), dp(9), dp(13), dp(12))
+            visibility = View.GONE
+        }
+        rootView.addView(crosshairControls, FrameLayout.LayoutParams(
+            -1, -2, Gravity.BOTTOM
+        ).apply { setMargins(dp(10), 0, dp(10), dp(16)) })
+        crosshairControls.addView(text("⌖  Наведите перекрестие на нужную точку", 13f,
+            palette.text).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+        })
+        crosshairCoordinates = text("Перемещайте карту или коснитесь места", 12f,
+            palette.secondary).apply {
+            gravity = Gravity.CENTER
+            setPadding(0, dp(7), 0, dp(11))
+        }
+        crosshairControls.addView(crosshairCoordinates)
+        val pickerActions = row()
+        crosshairControls.addView(pickerActions, LinearLayout.LayoutParams(-1, dp(48)))
+        val cancelPicker = styledButton("Отмена", 13f)
+        val confirmPicker = styledButton("✓  Установить точку", 13f, true)
+        pickerActions.addView(cancelPicker,
+            LinearLayout.LayoutParams(0, dp(46), 1f).apply { marginEnd = dp(5) })
+        pickerActions.addView(confirmPicker,
+            LinearLayout.LayoutParams(0, dp(46), 1.7f))
+        cancelPicker.setOnClickListener { finishCrosshairMode(false) }
+        confirmPicker.setOnClickListener { finishCrosshairMode(true) }
+        installSafeInsets()
+
         radius.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             override fun onItemSelected(parent: AdapterView<*>?, view: View?,
@@ -1079,10 +1150,101 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+
+    /**
+     * Android 15+ draws behind system bars; controls are inset individually,
+     * leaving the map full-bleed and the status bar completely unobstructed.
+     */
+    private fun installSafeInsets() {
+        rootView.setOnApplyWindowInsetsListener { _, insets ->
+            val top = if (Build.VERSION.SDK_INT >= 30) {
+                insets.getInsets(WindowInsets.Type.statusBars() or
+                    WindowInsets.Type.displayCutout()).top
+            } else insets.systemWindowInsetTop
+            val bottom = if (Build.VERSION.SDK_INT >= 30) {
+                insets.getInsets(WindowInsets.Type.navigationBars() or
+                    WindowInsets.Type.displayCutout()).bottom
+            } else insets.systemWindowInsetBottom
+            if (systemTopInset != top || systemBottomInset != bottom) {
+                systemTopInset = top
+                systemBottomInset = bottom
+                topHeader.layoutParams = (topHeader.layoutParams as FrameLayout.LayoutParams)
+                    .apply { topMargin = dp(10) + top }
+                sheetView.layoutParams = (sheetView.layoutParams as FrameLayout.LayoutParams)
+                    .apply { bottomMargin = bottom }
+                floatingRail.layoutParams = (floatingRail.layoutParams as FrameLayout.LayoutParams)
+                    .apply { bottomMargin = bottom + dp(112) }
+                crosshairControls.layoutParams =
+                    (crosshairControls.layoutParams as FrameLayout.LayoutParams).apply {
+                        bottomMargin = bottom + dp(16)
+                    }
+                updateMapChrome(if (mapFullscreen || isChoosingCrosshair)
+                    0 else sheetView.layoutParams.height)
+            }
+            insets
+        }
+        rootView.post { rootView.requestApplyInsets() }
+    }
+
+    private fun startCrosshairMode() {
+        val current = map ?: return
+        if (isChoosingCrosshair) return
+        isChoosingCrosshair = true
+        crosshairStart = current.cameraPosition.target
+        crosshairStartZoom = current.cameraPosition.zoom
+        details.visibility = View.GONE
+        sheetView.visibility = View.GONE
+        floatingRail.visibility = View.GONE
+        crosshairReticle.visibility = View.VISIBLE
+        crosshairControls.visibility = View.VISIBLE
+        updateCrosshairCoordinates()
+        mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams)
+            .apply { bottomMargin = systemBottomInset + dp(171) }
+        brandLink.layoutParams = (brandLink.layoutParams as FrameLayout.LayoutParams)
+            .apply { bottomMargin = systemBottomInset + dp(171) }
+        Toast.makeText(this, "Перемещайте карту или коснитесь нужной точки",
+            Toast.LENGTH_SHORT).show()
+    }
+
+    private fun updateCrosshairCoordinates() {
+        if (!isChoosingCrosshair || !::crosshairCoordinates.isInitialized) return
+        val focus = map?.cameraPosition?.target ?: return
+        crosshairCoordinates.text = String.format(Locale.US,
+            "Широта %.6f  ·  Долгота %.6f", focus.latitude, focus.longitude)
+    }
+
+    private fun finishCrosshairMode(confirm: Boolean) {
+        if (!isChoosingCrosshair) return
+        val chosen = map?.cameraPosition?.target
+        val zoom = map?.cameraPosition?.zoom ?: crosshairStartZoom
+        isChoosingCrosshair = false
+        crosshairReticle.visibility = View.GONE
+        crosshairControls.visibility = View.GONE
+        sheetView.visibility = if (mapFullscreen) View.GONE else View.VISIBLE
+        floatingRail.visibility = if (mapFullscreen || sheetExpanded) View.GONE else View.VISIBLE
+        updateMapChrome(if (mapFullscreen) 0 else sheetView.layoutParams.height)
+        if (confirm && chosen != null) {
+            setManualPosition(chosen)
+            map?.animateCamera(CameraUpdateFactory.newLatLngZoom(chosen, zoom), 300)
+        } else {
+            crosshairStart?.let { saved ->
+                map?.animateCamera(CameraUpdateFactory.newLatLngZoom(saved, crosshairStartZoom), 300)
+            }
+        }
+        crosshairStart = null
+    }
+
+    @Deprecated("Deprecated by Android")
+    override fun onBackPressed() {
+        if (isChoosingCrosshair) finishCrosshairMode(false)
+        else super.onBackPressed()
+    }
+
     private fun setMapFullscreen(full: Boolean) {
         mapFullscreen = full
         sheetView.visibility = if (full) View.GONE else View.VISIBLE
-        floatingRail.visibility = if (full || sheetExpanded) View.GONE else View.VISIBLE
+        floatingRail.visibility =
+            if (full || sheetExpanded || isChoosingCrosshair) View.GONE else View.VISIBLE
         fullScreenButton.text = if (full) "▣" else "⛶"
         fullScreenButton.contentDescription = if (full) "Вернуть панель" else "На весь экран"
         updateMapChrome(if (full) 0 else sheetView.layoutParams.height)
@@ -1117,7 +1279,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun updateMapChrome(sheetHeight: Int) {
-        val footerMargin = sheetHeight + dp(7)
+        val footerMargin = sheetHeight + dp(7) + systemBottomInset
         if (::mapAttribution.isInitialized) {
             mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
                 bottomMargin = footerMargin
