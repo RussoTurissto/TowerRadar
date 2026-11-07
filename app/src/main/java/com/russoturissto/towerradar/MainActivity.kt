@@ -400,6 +400,7 @@ class MainActivity : Activity(), SensorEventListener {
                     apiChecks[pref] = test
                     checkingApi.remove(pref)
                 }
+                redrawConnectionStatuses()
                 if (test.connected) {
                     getPreferences(Context.MODE_PRIVATE).edit()
                         .putString("map_provider", provider.id).apply()
@@ -505,6 +506,9 @@ class MainActivity : Activity(), SensorEventListener {
         val provider = MapSources.providers.first { it.id == "yandex" }
         getPreferences(Context.MODE_PRIVATE).edit()
             .putString(provider.keyPref, key).apply()
+        apiChecks.remove("map_key_yandex")
+        checkingApi.add("map_key_yandex")
+        redrawConnectionStatuses()
         Toast.makeText(this, "Ключ сохранён. Проверяем Яндекс Карты…", Toast.LENGTH_SHORT).show()
         val index = MapSources.providers.indexOf(provider) + 1
         if (sourceSpinner.selectedItemPosition != index) {
@@ -521,12 +525,15 @@ class MainActivity : Activity(), SensorEventListener {
             setSingleLine(true)
             setText(getPreferences(Context.MODE_PRIVATE).getString(pref, ""))
         }
-        val address = if (provider.id == "yandex")
-            "developer.tech.yandex.ru (Tiles API)" else "platform.2gis.ru (Raster Tiles API)"
+        val address = when {
+            provider.id == "yandex" -> "developer.tech.yandex.ru (Tiles API)"
+            provider.id.startsWith("google-") -> "console.cloud.google.com (Map Tiles API)"
+            else -> "platform.2gis.ru (Raster Tiles API)"
+        }
         KhakiDialogBuilder(this, palette)
             .setTitle(provider.name)
             .setMessage(
-                "Для этой карты с русскими подписями нужен личный ключ. " +
+                "Для этой карты нужен личный API-ключ. " +
                     "Получите его на " + address + ". Доступ и лимиты определяет поставщик. " +
                     "Ключ хранится только на телефоне, без отправки в GitHub."
             )
@@ -536,6 +543,8 @@ class MainActivity : Activity(), SensorEventListener {
                 if (key.isNotEmpty()) {
                     getPreferences(Context.MODE_PRIVATE).edit()
                         .putString(pref, key).apply()
+                    apiChecks.remove(pref)
+                    redrawConnectionStatuses()
                     useMapChoice(provider)
                 } else {
                     mapStatus.text = "Введите ключ, чтобы включить " + provider.name
@@ -543,7 +552,13 @@ class MainActivity : Activity(), SensorEventListener {
             }
             .setNeutralButton("Удалить ключ") { _, _ ->
                 getPreferences(Context.MODE_PRIVATE).edit().remove(pref).apply()
+                apiChecks.remove(pref)
+                checkingApi.remove(pref)
+                redrawConnectionStatuses()
                 mapStatus.text = "Ключ " + provider.name + " удалён."
+                if (MapSources.providers.getOrNull(providerIndex)?.keyPref == pref) {
+                    chooseBasemap()
+                }
             }
             .setNegativeButton("Отмена", null)
             .show()
@@ -919,7 +934,16 @@ class MainActivity : Activity(), SensorEventListener {
                 "Cell ID: " + reading.cellId,
                 "SIM ID: " + reading.subId,
                 if (servingSite == null) "Координаты обслуживающей соты неизвестны"
-                else "Маркер на карте: приблизительная позиция OpenCellID"
+                else "Маркер на карте: приблизительная позиция OpenCellID",
+                servingSite?.let { site ->
+                    activeUserPoint()?.let { source ->
+                        "Расстояние от " +
+                            if (manualPoint != null) "ручной точки" else "GPS" +
+                                ": " + String.format(Locale.US, "%.2f км",
+                                TowerData.distanceKm(source.latitude, source.longitude,
+                                    site.latitude, site.longitude))
+                    }
+                }
             )
             metrics.joinToString("\n")
         }
@@ -945,6 +969,8 @@ class MainActivity : Activity(), SensorEventListener {
             .setPositiveButton("Сохранить") { _, _ ->
                 getPreferences(Context.MODE_PRIVATE).edit()
                     .putString("opencellid_key", field.text.toString().trim()).apply()
+                apiChecks.remove("opencellid_key")
+                verifyConnection("opencellid_key")
                 lastFetch = null
                 requestedCellId = null
                 servingCell?.let(::updateServingCell)
@@ -952,6 +978,9 @@ class MainActivity : Activity(), SensorEventListener {
             }
             .setNeutralButton("Удалить") { _, _ ->
                 getPreferences(Context.MODE_PRIVATE).edit().remove("opencellid_key").apply()
+                apiChecks.remove("opencellid_key")
+                checkingApi.remove("opencellid_key")
+                redrawConnectionStatuses()
                 lastFetch = null
                 requestedCellId = null
                 servingSite = null
@@ -2118,7 +2147,7 @@ class MainActivity : Activity(), SensorEventListener {
             nearest.technology?.let { "Технологии: " + it },
             nearest.height?.let { "Высота: " + it },
             "Расстояние: " + distance +
-                if (manualPoint != null) " · от ручной точки" else " · от GPS",
+                (if (manualPoint != null) " · от ручной точки" else " · от GPS"),
             String.format(Locale.US, "Координаты: %.6f, %.6f", nearest.latitude, nearest.longitude),
             "База: " + nearest.source,
             "Источник: " + nearest.url
@@ -2160,6 +2189,10 @@ class MainActivity : Activity(), SensorEventListener {
         if (hasLocation()) startLocationUpdates()
         if (cellMonitor.hasPermission()) {
             cellMonitor.start(getPreferences(Context.MODE_PRIVATE).getInt("sim_id", -1))
+        }
+        if (MapSources.providers.getOrNull(providerIndex)?.id.orEmpty().startsWith("google-") &&
+            googleMapSession?.valid() != true && !choosingMap) {
+            MapSources.providers.getOrNull(providerIndex)?.let(::useMapChoice)
         }
         if (headingSensor == null) {
             headingView.text = "Компас недоступен"
