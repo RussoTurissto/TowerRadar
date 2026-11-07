@@ -52,6 +52,24 @@ class TowerDataTest {
         MapSources.tileTemplate(MapSources.providers.first { it.id == "yandex" })
     }
 
+    @Test fun servingCellMatchesExactOpenCellIdIdentity() {
+        val cell = ServingCell("T2", 1, "LTE", 250, 20, 100, 12345L,
+            -85, -90, -10, 17f, 3)
+        assertTrue(cell.validId)
+        assertTrue(cell.validDbm)
+        assertEquals("250/20/100/12345/LTE", cell.identity)
+        val response = """{"cells":[{"lat":49.281,"lon":39.218,"mcc":250,"mnc":20,"lac":100,"cellid":12345,"radio":"LTE"}]}"""
+        val result = CellSources.parse(response, 49.28, 39.22)
+        assertEquals("opencellid/" + cell.identity, result.first().id)
+    }
+
+    @Test fun missingRadioIdentifiersMustNotDrawFalseServingLine() {
+        val unavailable = ServingCell("", -1, "LTE", -1, -1, Int.MAX_VALUE,
+            Long.MAX_VALUE, null, null, null, null, 0)
+        assertFalse(unavailable.validId)
+        assertFalse(unavailable.validDbm)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun radiusMustBeAllowed() {
         TowerData.query(52.37, 4.9, 200)
