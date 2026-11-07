@@ -175,7 +175,7 @@ class CellMonitor(private val activity: Activity, private val listener: (Serving
             val nr = cell as? CellInfoNr ?: return null
                     val id = nr.cellIdentity as? CellIdentityNr ?: return null
                     val s = nr.cellSignalStrength as? CellSignalStrengthNr ?: return null
-                    ServingCell(operator, subId, "NR", id.mccString?.toIntOrNull() ?: -1,
+                    return ServingCell(operator, subId, "NR", id.mccString?.toIntOrNull() ?: -1,
                         id.mncString?.toIntOrNull() ?: -1, id.tac, id.nci, dbm(s.dbm),
                         rsrp(s.ssRsrp), rsrq(s.ssRsrq),
                         s.ssSinr.takeIf { it in -40..50 }?.toFloat(), s.level.coerceIn(0, 4))
