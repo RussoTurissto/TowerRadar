@@ -48,6 +48,7 @@ import org.maplibre.android.maps.MapView
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.layers.FillLayer
 import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.PropertyFactory
@@ -159,7 +160,7 @@ class MainActivity : Activity(), SensorEventListener {
             point.altitude.toFloat(), System.currentTimeMillis()).declination
         val degrees = ((Math.toDegrees(orientation[0].toDouble()).toFloat() + declination) % 360f + 360f) % 360f
         val diff = kotlin.math.abs((degrees - headingDegrees + 540f) % 360f - 180f)
-        if (diff < 4f) return
+        if (diff < 4f && headingView.text.toString() != "➤ —°") return
         headingDegrees = degrees
         if (::headingView.isInitialized) {
             val directions = arrayOf("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
@@ -203,6 +204,13 @@ class MainActivity : Activity(), SensorEventListener {
             brandLink.visibility = if (provider.id == "yandex") View.VISIBLE else View.GONE
         }
         current.setStyle(MapSources.style(provider, key)) { style ->
+            if (palette.dark && provider.keyPref == null) {
+                (style.getLayer("basemap-layer") as? RasterLayer)?.setProperties(
+                    PropertyFactory.rasterBrightnessMax(0.66f),
+                    PropertyFactory.rasterSaturation(-0.48f),
+                    PropertyFactory.rasterContrast(0.1f)
+                )
+            }
             style.addSource(GeoJsonSource("towers", emptyFeatures()))
             style.addSource(GeoJsonSource("my-location", emptyFeatures()))
             style.addSource(GeoJsonSource("gps-accuracy", emptyFeatures()))
@@ -383,6 +391,7 @@ class MainActivity : Activity(), SensorEventListener {
             "Геопозиция: " + if (manualPoint == null) "Автоматическая" else "Ручная",
             "SIM для отслеживания",
             "Ключи Яндекс / 2ГИС",
+            "Открыть кабинет Яндекс ID",
             "Дополнительные соты OpenCellID",
             "Сектор направления: " + if (showCone) "Включён" else "Выключен"
         )
@@ -397,8 +406,10 @@ class MainActivity : Activity(), SensorEventListener {
                             requestMapKey(MapSources.providers.first { it.id ==
                                 if (index == 0) "yandex" else "2gis" })
                         }.show()
-                    4 -> editCellKey()
-                    5 -> {
+                    4 -> startActivity(Intent(Intent.ACTION_VIEW,
+                        Uri.parse("https://developer.tech.yandex.ru/")))
+                    5 -> editCellKey()
+                    6 -> {
                         showCone = !showCone
                         getPreferences(Context.MODE_PRIVATE).edit()
                             .putBoolean("show_cone", showCone).apply()
