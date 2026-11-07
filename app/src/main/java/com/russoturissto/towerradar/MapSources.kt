@@ -18,6 +18,7 @@ object MapSources {
     val providers = listOf(
         MapProvider("OSM France", "https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png", "© OpenStreetMap contributors · OpenStreetMap France"),
         MapProvider("OpenStreetMap", "https://tile.openstreetmap.org/{z}/{x}/{y}.png", "© OpenStreetMap contributors"),
+        MapProvider("OSM Deutschland", "https://tile.openstreetmap.de/{z}/{x}/{y}.png", "© OpenStreetMap contributors · OSM Deutschland"),
         MapProvider("OSM HOT", "https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png", "© OpenStreetMap contributors · HOT / OSM France")
     )
     fun style(provider: MapProvider): Style.Builder {

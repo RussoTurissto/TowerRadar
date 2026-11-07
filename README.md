@@ -7,7 +7,7 @@ An independent Android application for showing nearby telecommunications masts a
 ## Features
 
 - GPS-based search with user location marker and updates while the app is open.
-- MapLibre map with a built-in raster style, availability probing and manual map provider switching: OSM France, OpenStreetMap, and OSM HOT.
+- MapLibre map with a built-in raster style, availability probing and manual map provider switching: OSM France, OpenStreetMap, OSM Deutschland, and OSM HOT.
 - Real-time phone azimuth from the rotation vector sensor with magnetic declination correction, displayed as an arrow on the GPS marker.
 - Optional OpenCellID key entry for estimated positions of logical radio cells near the center, not physical masts.
 - Expanded Overpass API query with mast/antenna/operator tags, plus server failover: VK Maps Overpass, Private.coffee, and FOSSGIS.

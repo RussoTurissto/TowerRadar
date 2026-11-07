@@ -156,60 +156,60 @@ class MainActivity : Activity(), SensorEventListener {
         providerIndex = MapSources.providers.indexOf(provider).coerceAtLeast(0)
         if (::sourceButton.isInitialized) sourceButton.text = "Карта: " + provider.name
         if (::mapStatus.isInitialized) mapStatus.text = "Подложка: " + provider.attribution
-            current.setStyle(MapSources.style(provider)) { style ->
-                style.addSource(GeoJsonSource("towers", emptyFeatures()))
-                style.addSource(GeoJsonSource("my-location", emptyFeatures()))
+        current.setStyle(MapSources.style(provider)) { style ->
+            style.addSource(GeoJsonSource("towers", emptyFeatures()))
+            style.addSource(GeoJsonSource("my-location", emptyFeatures()))
 
-                style.addLayer(CircleLayer("potential-masts", "towers").apply {
-                    setFilter(Expression.eq(Expression.get("mobile"), Expression.literal(false)))
-                    setProperties(
-                        PropertyFactory.circleColor(Color.rgb(245, 158, 11)),
-                        PropertyFactory.circleRadius(6f),
-                        PropertyFactory.circleStrokeColor(Color.WHITE),
-                        PropertyFactory.circleStrokeWidth(2f)
-                    )
-                })
-                style.addLayer(CircleLayer("mobile-masts", "towers").apply {
-                    setFilter(Expression.eq(Expression.get("mobile"), Expression.literal(true)))
-                    setProperties(
-                        PropertyFactory.circleColor(Color.rgb(37, 99, 235)),
-                        PropertyFactory.circleRadius(7f),
-                        PropertyFactory.circleStrokeColor(Color.WHITE),
-                        PropertyFactory.circleStrokeWidth(2f)
-                    )
-                })
-                style.addLayer(CircleLayer("location-halo", "my-location").apply {
-                    setProperties(
-                        PropertyFactory.circleColor(Color.rgb(147, 197, 253)),
-                        PropertyFactory.circleRadius(16f),
-                        PropertyFactory.circleOpacity(0.35f)
-                    )
-                })
-                style.addLayer(CircleLayer("location-dot", "my-location").apply {
-                    setProperties(
-                        PropertyFactory.circleColor(Color.rgb(29, 78, 216)),
-                        PropertyFactory.circleRadius(6f),
-                        PropertyFactory.circleStrokeColor(Color.WHITE),
-                        PropertyFactory.circleStrokeWidth(3f)
-                    )
-                })
+            style.addLayer(CircleLayer("potential-masts", "towers").apply {
+                setFilter(Expression.eq(Expression.get("mobile"), Expression.literal(false)))
+                setProperties(
+                    PropertyFactory.circleColor(Color.rgb(245, 158, 11)),
+                    PropertyFactory.circleRadius(6f),
+                    PropertyFactory.circleStrokeColor(Color.WHITE),
+                    PropertyFactory.circleStrokeWidth(2f)
+                )
+            })
+            style.addLayer(CircleLayer("mobile-masts", "towers").apply {
+                setFilter(Expression.eq(Expression.get("mobile"), Expression.literal(true)))
+                setProperties(
+                    PropertyFactory.circleColor(Color.rgb(37, 99, 235)),
+                    PropertyFactory.circleRadius(7f),
+                    PropertyFactory.circleStrokeColor(Color.WHITE),
+                    PropertyFactory.circleStrokeWidth(2f)
+                )
+            })
+            style.addLayer(CircleLayer("location-halo", "my-location").apply {
+                setProperties(
+                    PropertyFactory.circleColor(Color.rgb(147, 197, 253)),
+                    PropertyFactory.circleRadius(16f),
+                    PropertyFactory.circleOpacity(0.35f)
+                )
+            })
+            style.addLayer(CircleLayer("location-dot", "my-location").apply {
+                setProperties(
+                    PropertyFactory.circleColor(Color.rgb(29, 78, 216)),
+                    PropertyFactory.circleRadius(6f),
+                    PropertyFactory.circleStrokeColor(Color.WHITE),
+                    PropertyFactory.circleStrokeWidth(3f)
+                )
+            })
 
-                style.addImage("phone-direction", headingIcon())
-                style.addLayer(SymbolLayer("phone-heading", "my-location").apply {
-                    setProperties(
-                        PropertyFactory.iconImage("phone-direction"),
-                        PropertyFactory.iconRotate(headingDegrees),
-                        PropertyFactory.iconSize(0.62f),
-                        PropertyFactory.iconAllowOverlap(true),
-                        PropertyFactory.iconIgnorePlacement(true),
-                        PropertyFactory.iconRotationAlignment("map")
-                    )
-                })
-                styled = true
-                updateDot()
-                showPins()
-                if (!initiallyCentered) center?.let(::moveCamera)
-            }
+            style.addImage("phone-direction", headingIcon())
+            style.addLayer(SymbolLayer("phone-heading", "my-location").apply {
+                setProperties(
+                    PropertyFactory.iconImage("phone-direction"),
+                    PropertyFactory.iconRotate(headingDegrees),
+                    PropertyFactory.iconSize(0.62f),
+                    PropertyFactory.iconAllowOverlap(true),
+                    PropertyFactory.iconIgnorePlacement(true),
+                    PropertyFactory.iconRotationAlignment("map")
+                )
+            })
+            styled = true
+            updateDot()
+            showPins()
+            if (!initiallyCentered) center?.let(::moveCamera)
+        }
     }
 
 
@@ -422,7 +422,7 @@ class MainActivity : Activity(), SensorEventListener {
         detailBody = text("", 13f, Color.rgb(71, 85, 105))
         details.addView(detailBody)
 
-        root.addView(text("© OpenStreetMap contributors · OpenFreeMap", 10f, Color.rgb(51, 65, 85)).apply {
+        root.addView(text("© OpenStreetMap contributors · выбранная подложка", 10f, Color.rgb(51, 65, 85)).apply {
             setPadding(dp(6), dp(3), dp(6), dp(3))
             background = rounded(Color.WHITE, 3)
         }, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.BOTTOM).apply {
