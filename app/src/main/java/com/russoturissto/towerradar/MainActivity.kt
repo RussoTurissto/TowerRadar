@@ -292,7 +292,7 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         MapLibre.getInstance(this)
-        HttpRequestUtil().setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
+        HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
             chain.proceed(chain.request().newBuilder()
                 .header("User-Agent", "TowerRadar/0.2.0 (+https://github.com/RussoTurissto/TowerRadar)").build())
         }.build())
