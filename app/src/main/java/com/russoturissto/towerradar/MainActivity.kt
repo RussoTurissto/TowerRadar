@@ -368,7 +368,12 @@ class MainActivity : Activity(), SensorEventListener {
                 if (selected >= 0) {
                     if (selected != providerIndex) applyBasemap(MapSources.providers[selected])
                     mapStatus.text = "Подложка: " + MapSources.providers[selected].attribution
-                } else mapStatus.text = "OSM недоступен. Выберите другой источник в списке."
+                } else {
+                    // No network: retain a valid OSM map style so previously
+                    // viewed areas can still render from the ambient cache.
+                    if (providerIndex != 0) applyBasemap(MapSources.providers[0])
+                    mapStatus.text = "Нет сети · показываем сохранённые участки OSM, если доступны"
+                }
             }
         }
     }
@@ -378,6 +383,14 @@ class MainActivity : Activity(), SensorEventListener {
         val key = provider.keyPref?.let {
             getPreferences(Context.MODE_PRIVATE).getString(it, "").orEmpty()
         }.orEmpty()
+        // Public OSM sources may be reopened without internet: MapLibre can
+        // draw already valid ambient cached tiles with no preflight HTTP call.
+        if (provider.keyPref == null) {
+            getPreferences(Context.MODE_PRIVATE).edit()
+                .putString("map_provider", provider.id).apply()
+            applyBasemap(provider)
+            return
+        }
         if (provider.keyPref != null && key.isBlank()) {
             if (provider.id == "yandex") showYandexSetup()
             else if (provider.id.startsWith("google-")) showGoogleSetup()
