@@ -10,6 +10,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -163,9 +164,8 @@ class KhakiDialogBuilder(private val activity: Activity, private val palette: Kh
         }
 
         val scroll = ScrollView(activity).apply {
-            fillViewport = false
             isVerticalScrollBarEnabled = true
-            addView(content, ScrollView.LayoutParams(-1, -2))
+            addView(content, FrameLayout.LayoutParams(-1, -2))
         }
         val displayHeight = activity.resources.displayMetrics.heightPixels
         val estimate = dp(58) * (choices?.size ?: 0) +
