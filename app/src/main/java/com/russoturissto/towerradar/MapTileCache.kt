@@ -3,6 +3,9 @@ package com.russoturissto.towerradar
 import android.app.Activity
 import android.content.Context
 import org.maplibre.android.offline.OfflineManager
+import java.util.concurrent.atomic.AtomicInteger
+import java.text.DateFormat
+import java.util.Date
 
 /**
  * Ambient caching of tiles that were actually displayed, not bulk downloads.
@@ -15,6 +18,33 @@ import org.maplibre.android.offline.OfflineManager
 class MapTileCache(private val activity: Activity) {
     private val prefs = activity.getSharedPreferences("tower_map_cache", Context.MODE_PRIVATE)
     private val offline: OfflineManager get() = OfflineManager.getInstance(activity)
+    private val networkTileRequests = AtomicInteger()
+
+    /** Network requests are only a hint: already cached tiles bypass the HTTP interceptor. */
+    fun recordTileNetworkRequest() { networkTileRequests.incrementAndGet() }
+
+    fun diagnostics(provider: MapProvider?): String {
+        val allowed = provider != null && diskCacheAllowed(provider)
+        val last = prefs.getLong("last_cache_purge", 0)
+        val whenCleared = if (last > 0)
+            DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(last))
+            else "неизвестно"
+        return "Подложка: " + (provider?.name ?: "не выбрана") +
+            "\\nДисковый кеш: " +
+            if (allowed) "разрешён, лимит " + limitMb() + " МБ" else
+                "отключён правилами поставщика"
+    }
+
+    fun detailedDiagnostics(provider: MapProvider?): String =
+        diagnostics(provider) +
+            "\\nПоследняя очистка: " + (
+                prefs.getLong("last_cache_purge", 0).takeIf { it > 0 }?.let {
+                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                        .format(Date(it))
+                } ?: "неизвестна") +
+            "\\nСетевых запросов тайлов за сеанс: " + networkTileRequests.get() +
+            "\\nУспешное отображение из кеша зависит от TTL тайлов и политики сервера. " +
+            "Размер занятого SQLite-кеша MapLibre API отдельно не сообщает."
 
     companion object {
         private const val FIRST_COMPLIANT_CACHE_SCHEMA = 1
