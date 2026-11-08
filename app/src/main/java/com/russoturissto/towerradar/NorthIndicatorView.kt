@@ -7,54 +7,65 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Typeface
 import android.view.View
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.PI
+import kotlin.math.min
 
 /**
- * Unobstructed N + arrow; no circular compass icon or background.
- * Defaults to live device north when rotation-vector sensor is available.
- * Tap to switch to the cartographic north shown by MapLibre's map bearing.
+ * White circular north control: an upright N and a rotating red/charcoal arrow.
+ * Tap toggles device north and MapLibre map north (same behavior as before).
  */
 class NorthIndicatorView(context: Context, darkTheme: Boolean = false) : View(context) {
     private fun dp(v: Float) = v * resources.displayMetrics.density
-    private val foreground = if (darkTheme) Color.rgb(217, 226, 190) else Color.rgb(41, 56, 43)
-    private val contrast = if (darkTheme) Color.rgb(35, 45, 31) else Color.WHITE
-    private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = contrast; style = Paint.Style.STROKE
-        strokeWidth = dp(2.8f); strokeJoin = Paint.Join.ROUND
+    private val disk = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+        setShadowLayer(dp(2.5f), 0f, dp(1.2f), Color.argb(95, 0, 0, 0))
     }
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = foreground; style = Paint.Style.FILL
+    private val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(171, 177, 173)
+        style = Paint.Style.STROKE
+        strokeWidth = dp(1.2f)
     }
     private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = foreground; textSize = resources.displayMetrics.scaledDensity * 14f
+        color = Color.rgb(27, 34, 30)
         typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        textSize = resources.displayMetrics.scaledDensity * 14f
         textAlign = Paint.Align.CENTER
     }
-    private val labelOutline = Paint(label).apply {
-        color = contrast; style = Paint.Style.STROKE
-        strokeWidth = dp(2.2f); strokeJoin = Paint.Join.ROUND
+    private val red = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(224, 49, 50)
+        style = Paint.Style.FILL
+    }
+    private val charcoal = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(44, 51, 48)
+        style = Paint.Style.FILL
     }
     private var deviceAzimuth: Float? = null
     private var mapBearing: Double = 0.0
     private var preferDevice = true
     private var rotationDegrees = 0f
 
+    init {
+        // The small software layer permits a subtle circle shadow on both themes.
+        setLayerType(LAYER_TYPE_SOFTWARE, null)
+    }
+
     fun setMapBearing(bearing: Double) {
         mapBearing = bearing
         updateRotation()
     }
+
     fun setCompassHeading(trueNorthDegrees: Float) {
         if (!trueNorthDegrees.isFinite()) return
         deviceAzimuth = trueNorthDegrees
         updateRotation()
     }
+
     fun toggleSource(): Boolean {
         preferDevice = !preferDevice
         updateRotation()
         return preferDevice
     }
+
     private fun updateRotation() {
         val degrees = if (preferDevice && deviceAzimuth != null)
             NorthDirectionModel.arrowRotation(deviceAzimuth!!.toDouble())
@@ -68,27 +79,30 @@ class NorthIndicatorView(context: Context, darkTheme: Boolean = false) : View(co
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val cx = width * .5f
-        val cy = height * .59f
-        // A slender filled arrow with a small hollow notch.
-        val arrow = Path().apply {
-            moveTo(cx, cy - dp(13f))
-            lineTo(cx + dp(5f), cy + dp(10f))
-            lineTo(cx, cy + dp(4f))
-            lineTo(cx - dp(5f), cy + dp(10f))
+        val cx = width / 2f
+        val cy = height / 2f
+        val radius = (min(width, height) / 2f - dp(4.0f)).coerceAtLeast(0f)
+        canvas.drawCircle(cx, cy, radius, disk)
+        canvas.drawCircle(cx, cy, radius, border)
+        // Letter never tilts; only the two-tone arrow rotates.
+        canvas.drawText("N", cx, cy - dp(6.5f), label)
+        canvas.save()
+        val arrowCenter = cy + dp(7f)
+        canvas.rotate(rotationDegrees, cx, arrowCenter)
+        val northHalf = Path().apply {
+            moveTo(cx, arrowCenter - dp(9f))
+            lineTo(cx + dp(6.6f), arrowCenter + dp(7f))
+            lineTo(cx, arrowCenter + dp(3.5f))
             close()
         }
-        canvas.save()
-        canvas.rotate(rotationDegrees, cx, cy)
-        canvas.drawPath(arrow, outline)
-        canvas.drawPath(arrow, fill)
+        val darkHalf = Path().apply {
+            moveTo(cx, arrowCenter - dp(9f))
+            lineTo(cx, arrowCenter + dp(3.5f))
+            lineTo(cx - dp(6.6f), arrowCenter + dp(7f))
+            close()
+        }
+        canvas.drawPath(northHalf, red)
+        canvas.drawPath(darkHalf, charcoal)
         canvas.restore()
-        // Keep N upright while moving it to the arrow tip on the invisible circle.
-        val rad = rotationDegrees * PI / 180.0
-        val labelDistance = dp(26f)
-        val nx = cx + (sin(rad) * labelDistance).toFloat()
-        val ny = cy - (cos(rad) * labelDistance).toFloat()
-        canvas.drawText("N", nx, ny + dp(4f), labelOutline)
-        canvas.drawText("N", nx, ny + dp(4f), label)
     }
 }

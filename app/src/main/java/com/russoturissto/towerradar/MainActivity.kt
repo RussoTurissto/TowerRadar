@@ -22,6 +22,9 @@ import android.content.res.ColorStateList
 import android.os.Build
 import android.telephony.SubscriptionManager
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.text.InputType
 import android.content.pm.PackageManager
 import android.graphics.Rect
@@ -191,6 +194,12 @@ class MainActivity : Activity(), SensorEventListener {
     private var lastFetchTime = 0L
     private var sites = emptyList<TowerSite>()
     private var visible = emptyList<TowerSite>()
+    private var selectedAimSite: TowerSite? = null
+    private var aimAligned = false
+    private var aimAlignmentInitialized = false
+    private var lastAimPulseAt = -10000L
+    private var hasHeadingReading = false
+    private var aimForeground = false
     private val unknown = "• Не указан"
 
     private val listener = object : LocationListener {
@@ -229,6 +238,8 @@ class MainActivity : Activity(), SensorEventListener {
         // Shortest-arc smoothing reduces sensor jitter without lagging a real turn.
         headingDegrees = if (headingView.text.toString() == "➤ —°") degrees
             else (headingDegrees + ((degrees - headingDegrees + 540f) % 360f - 180f) * 0.45f + 360f) % 360f
+        hasHeadingReading = true
+        updateAimAlignment(vibrateOnEnter = true)
         if (::northIndicator.isInitialized) northIndicator.setCompassHeading(headingDegrees)
         if (::headingView.isInitialized) {
             val directions = arrayOf("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
@@ -298,6 +309,7 @@ class MainActivity : Activity(), SensorEventListener {
             style.addSource(GeoJsonSource("heading-ray", emptyFeatures()))
             style.addSource(GeoJsonSource("cell-link", emptyFeatures()))
             style.addSource(GeoJsonSource("serving-cell", emptyFeatures()))
+            style.addSource(GeoJsonSource("selected-aim", emptyFeatures()))
 
             style.addLayer(FillLayer("gps-accuracy-fill", "gps-accuracy").apply {
                 setProperties(PropertyFactory.fillColor(palette.olive), PropertyFactory.fillOpacity(0.10f))
@@ -321,6 +333,15 @@ class MainActivity : Activity(), SensorEventListener {
                 setProperties(PropertyFactory.lineColor(Color.rgb(5, 144, 177)),
                     PropertyFactory.lineWidth(1.5f),
                     PropertyFactory.lineOpacity(sectorAlpha() * .85f))
+            })
+            // Draw the selected-site guide above the fan but below the live heading beam.
+            style.addLayer(LineLayer("selected-aim-guide", "selected-aim").apply {
+                setProperties(
+                    PropertyFactory.lineColor(Color.rgb(184, 119, 48)),
+                    PropertyFactory.lineWidth(2.5f),
+                    PropertyFactory.lineOpacity(0.74f),
+                    PropertyFactory.lineDasharray(arrayOf(2.1f, 2.3f))
+                )
             })
             style.addLayer(LineLayer("heading-center-halo", "heading-ray").apply {
                 setProperties(PropertyFactory.lineColor(Color.WHITE),
@@ -405,6 +426,7 @@ class MainActivity : Activity(), SensorEventListener {
             updateDot()
             showPins()
             updateOverlays()
+            updateAimColors()
             if (!initiallyCentered) center?.let(::moveCamera)
             if (provider.id.startsWith("google-")) requestGoogleAttribution(force = true)
         }
@@ -853,6 +875,7 @@ class MainActivity : Activity(), SensorEventListener {
         (map?.style?.getLayer("heading-center-color") as? LineLayer)?.setProperties(
             PropertyFactory.lineOpacity(beamAlpha())
         )
+        updateAimColors()
     }
 
     /**
@@ -1767,8 +1790,7 @@ class MainActivity : Activity(), SensorEventListener {
             marginStart = dp(7)
         })
 
-        // Only the letter N and a slim arrow are painted. No background,
-        // compass disk or visible guide circle. Place it above the right rail.
+        // White circular N compass with a red/charcoal pointer above the right rail.
         northIndicator = NorthIndicatorView(this, palette.dark).apply {
             contentDescription = "Направление севера"
             isClickable = true
@@ -2035,7 +2057,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         detailRow.addView(detailTitle, LinearLayout.LayoutParams(0, -2, 1f))
         detailRow.addView(styledButton("✕", 17f).apply {
-            setOnClickListener { details.visibility = View.GONE }
+            setOnClickListener { details.visibility = View.GONE; clearAimSelection() }
         }, LinearLayout.LayoutParams(dp(43), dp(40)))
         detailBody = text("", 12f, palette.secondary).apply {
             maxLines = 9
@@ -2851,6 +2873,7 @@ class MainActivity : Activity(), SensorEventListener {
             arrayOf(Feature.fromGeometry(Point.fromLngLat(point.longitude, point.latitude)))
         )
         (map?.style?.getSource("my-location") as? GeoJsonSource)?.setGeoJson(features)
+        updateSelectedAimLine()
         updateOverlays()
     }
 
@@ -2950,6 +2973,109 @@ class MainActivity : Activity(), SensorEventListener {
         (map?.style?.getSource("serving-cell") as? GeoJsonSource)?.setGeoJson(cell)
     }
 
+    /**
+     * Aimed rays are only anchored at a recent real GPS/network fix.
+     * A manually chosen search centre must never be mistaken for the user's position.
+     */
+    private fun aimOrigin(): Location? {
+        if (manualPoint != null || !hasLocation()) return null
+        val fix = location ?: return null
+        val age = if (fix.elapsedRealtimeNanos > 0L)
+            (SystemClock.elapsedRealtimeNanos() - fix.elapsedRealtimeNanos) / 1000000L
+        else System.currentTimeMillis() - fix.time
+        return fix.takeIf { age in 0L..120000L &&
+            it.latitude in -90.0..90.0 && it.longitude in -180.0..180.0 }
+    }
+
+    /** A single static GeoJSON segment; don't re-create it on every compass sample. */
+    private fun updateSelectedAimLine() {
+        if (!styled) return
+        val target = selectedAimSite
+        val origin = aimOrigin()
+        val shape = if (origin == null || target == null ||
+            TowerAimModel.bearingDegrees(origin.latitude, origin.longitude,
+                target.latitude, target.longitude) == null) emptyFeatures()
+        else FeatureCollection.fromFeatures(arrayOf(
+            Feature.fromGeometry(LineString.fromLngLats(listOf(
+                Point.fromLngLat(origin.longitude, origin.latitude),
+                Point.fromLngLat(target.longitude, target.latitude)
+            )))
+        ))
+        (map?.style?.getSource("selected-aim") as? GeoJsonSource)?.setGeoJson(shape)
+        updateAimAlignment(vibrateOnEnter = false)
+        // Also restore normal beam color when a site is deselected or switched.
+        updateAimColors()
+    }
+
+    private fun clearAimSelection() {
+        if (selectedAimSite == null) return
+        selectedAimSite = null
+        aimAligned = false
+        aimAlignmentInitialized = false
+        updateSelectedAimLine()
+    }
+
+    /**
+     * The red lock requires actual device heading and geographic bearing.
+     * Enter within 5 degrees, exit beyond 9 to avoid repeated vibrations at the edge.
+     */
+    private fun updateAimAlignment(vibrateOnEnter: Boolean) {
+        val target = selectedAimSite
+        val origin = aimOrigin()
+        val bearing = if (target != null && origin != null && hasHeadingReading && showCone)
+            TowerAimModel.bearingDegrees(origin.latitude, origin.longitude,
+                target.latitude, target.longitude)
+        else null
+        val next = bearing != null &&
+            TowerAimModel.aligned(aimAligned, headingDegrees.toDouble(), bearing)
+        val firstSample = !aimAlignmentInitialized
+        aimAlignmentInitialized = true
+        val entered = next && !aimAligned
+        if (next != aimAligned) {
+            aimAligned = next
+            updateAimColors()
+        }
+        if (entered && !firstSample && vibrateOnEnter && aimForeground) {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastAimPulseAt >= 2000L) {
+                lastAimPulseAt = now
+                vibrateForAim()
+            }
+        }
+    }
+
+    private fun updateAimColors() {
+        val redLock = aimAligned && selectedAimSite != null
+        (map?.style?.getLayer("selected-aim-guide") as? LineLayer)?.setProperties(
+            PropertyFactory.lineColor(if (redLock) Color.rgb(210, 49, 52)
+                else Color.rgb(184, 119, 48)),
+            PropertyFactory.lineOpacity(if (redLock) 0.95f else 0.74f),
+            PropertyFactory.lineWidth(if (redLock) 3.0f else 2.5f)
+        )
+        (map?.style?.getLayer("heading-center-color") as? LineLayer)?.setProperties(
+            PropertyFactory.lineColor(if (redLock) Color.rgb(210, 49, 52)
+                else Color.rgb(0, 195, 220))
+        )
+    }
+
+    private fun vibrateForAim() {
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= 31)
+                (getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager)
+                    .defaultVibrator
+            else {
+                @Suppress("DEPRECATION")
+                (getSystemService(Context.VIBRATOR_SERVICE) as Vibrator)
+            }
+            if (vibrator.hasVibrator()) {
+                vibrator.vibrate(VibrationEffect.createOneShot(70L,
+                    VibrationEffect.DEFAULT_AMPLITUDE))
+            }
+        } catch (_: SecurityException) {
+            // Vibration may be disabled by device/user policy.
+        }
+    }
+
     /** The sole distance origin. Panning the map never changes this coordinate. */
     private fun activeUserPoint(): LatLng? =
         manualPoint ?: location?.let { LatLng(it.latitude, it.longitude) }
@@ -2962,21 +3088,37 @@ class MainActivity : Activity(), SensorEventListener {
             hypot((p.x - touch.x).toDouble(), (p.y - touch.y).toDouble())
         } ?: run {
             details.visibility = View.GONE
+            clearAimSelection()
             return
         }
         val p = currentMap.projection.toScreenLocation(LatLng(nearest.latitude, nearest.longitude))
         if (hypot((p.x - touch.x).toDouble(), (p.y - touch.y).toDouble()) > dp(30)) {
             details.visibility = View.GONE
+            clearAimSelection()
             return
         }
+        selectedAimSite = nearest
+        aimAligned = false
+        aimAlignmentInitialized = false
+        updateSelectedAimLine()
         detailTitle.text = nearest.name ?: nearest.operator ?: "Объект связи"
         val from = activeUserPoint()
         val distance = from?.let {
             String.format(Locale.US, "%.2f км", TowerData.distanceKm(
                 it.latitude, it.longitude, nearest.latitude, nearest.longitude))
         } ?: "неизвестно"
+        val gpsForAim = aimOrigin()
+        val aimInfo = when {
+            manualPoint != null -> "Наведение: отключите ручную точку, используйте GPS"
+            gpsForAim == null -> "Наведение: включите геолокацию и дождитесь GPS / Wi-Fi"
+            else -> "Наведение: поверните телефон к вышке (совпадение ±5°)"
+        }
         detailBody.text = listOfNotNull(
             "Оператор: " + (nearest.operator ?: "не указан"),
+            aimInfo,
+            gpsForAim?.takeIf { it.hasAccuracy() && it.accuracy > 70f }?.let {
+                "Ориентирование приблизительное: точность GPS ±" + it.accuracy.toInt() + " м"
+            },
             if (nearest.id.startsWith("opencellid/"))
                 "Примерная позиция радиосоты OpenCellID · НЕ координата физической мачты"
             else if (nearest.mobile) "Объект связи из OpenStreetMap (OSM)"
@@ -3011,7 +3153,9 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onStart() { super.onStart(); mapView.onStart() }
     override fun onResume() {
         super.onResume()
+        aimForeground = true
         mapView.onResume()
+        updateSelectedAimLine()
         val prefs = getPreferences(Context.MODE_PRIVATE)
         if (prefs.getBoolean("yandex_return_hint", false)) {
             prefs.edit().remove("yandex_return_hint").apply()
@@ -3041,6 +3185,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
     override fun onPause() {
+        aimForeground = false
         persistLastCamera(force = true)
         sensorManager.unregisterListener(this)
         cellMonitor.stop()
