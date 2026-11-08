@@ -20,7 +20,7 @@ object SettingsVault {
     private const val ivLength = 12
     private val keys = setOf(
         "map_key_yandex", "map_key_2gis", "map_key_google", "opencellid_key",
-        "manual_lat", "manual_lon", "map_provider", "app_theme",
+        "manual_lat", "manual_lon", "map_provider", "app_theme", "display_mode",
         "sim_id", "radius", "show_cone", "beam_brightness", "sector_brightness",
         "sector_intensity", "sector_length", "map_last_resolved",
         "last_camera_valid", "last_camera_lat", "last_camera_lon",

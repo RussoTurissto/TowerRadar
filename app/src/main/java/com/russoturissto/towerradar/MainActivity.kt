@@ -7,6 +7,9 @@ import android.animation.ValueAnimator
 import android.content.ClipboardManager
 import android.view.MotionEvent
 import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.view.WindowManager
+import android.text.TextUtils
 import android.view.Surface
 import android.view.ViewGroup
 import org.maplibre.android.camera.CameraPosition
@@ -131,7 +134,13 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var floatingRail: LinearLayout
     private lateinit var fullScreenButton: Button
     private var sheetExpanded = false
-    private var mapFullscreen = false
+
+    // Independent of the map-only ⛶ button: system chrome and camera-safe top information.
+    private var displayMode = DisplayModePolicy.STANDARD
+    private lateinit var cameraStatusBand: FrameLayout
+    private lateinit var cameraNetworkChip: TextView
+    private lateinit var cameraTowersChip: TextView
+    private var compactCameraStatus = false
     private lateinit var mapTileCache: MapTileCache
     private lateinit var mapView: MapView
     private lateinit var locationFusion: LocationFusion
@@ -669,6 +678,8 @@ class MainActivity : Activity(), SensorEventListener {
                     KhakiTheme.NIGHT -> "Ночная"
                     else -> "Системная"
                 },
+            "Экран и отображение: " + if (displayMode == DisplayModePolicy.FULLSCREEN)
+                "Полноэкранный" else "Стандартный",
             "Геопозиция: " + if (manualPoint == null) "Автоматическая GPS" else "Ручная точка",
             "SIM для отслеживания",
             "Подключения API: Яндекс · 2ГИС · Google · OpenCellID",
@@ -681,18 +692,19 @@ class MainActivity : Activity(), SensorEventListener {
             .setItems(items) { _, selected ->
                 when (selected) {
                     0 -> selectTheme()
-                    1 -> showPositionOptions()
-                    2 -> selectSim()
-                    3 -> showConnections()
-                    4 -> {
+                    1 -> selectDisplayMode()
+                    2 -> showPositionOptions()
+                    3 -> selectSim()
+                    4 -> showConnections()
+                    5 -> {
                         showCone = !showCone
                         getPreferences(Context.MODE_PRIVATE).edit()
                             .putBoolean("show_cone", showCone).apply()
                         updateOverlays()
                     }
-                    5 -> showDirectionBrightness()
-                    6 -> showCacheSettings()
-                    7 -> showBackupMenu()
+                    6 -> showDirectionBrightness()
+                    7 -> showCacheSettings()
+                    8 -> showBackupMenu()
                 }
             }.setNegativeButton("Закрыть", null).show()
     }
@@ -1161,6 +1173,25 @@ class MainActivity : Activity(), SensorEventListener {
             }.setNegativeButton("Отмена", null).show()
     }
 
+    private fun selectDisplayMode() {
+        val entries = arrayOf(
+            "Стандартный · часы и системные уведомления видны",
+            "Полноэкранный · больше места для карты и сведений у камеры"
+        )
+        KhakiDialogBuilder(this, palette).setTitle("Экран и отображение")
+            .setSingleChoiceItems(entries,
+                if (displayMode == DisplayModePolicy.FULLSCREEN) 1 else 0) { dialog, selected ->
+                val next = if (selected == 1) DisplayModePolicy.FULLSCREEN
+                    else DisplayModePolicy.STANDARD
+                getPreferences(Context.MODE_PRIVATE).edit()
+                    .putString("display_mode", next).apply()
+                displayMode = next
+                dialog.dismiss()
+                applyDisplayMode()
+            }
+            .setNegativeButton("Отмена", null).show()
+    }
+
     private fun selectSim() {
         if (!cellMonitor.hasSignalPermission()) {
             KhakiDialogBuilder(this, palette).setTitle("Доступ к SIM")
@@ -1340,6 +1371,7 @@ class MainActivity : Activity(), SensorEventListener {
                 "Сеть: ожидаем сигнал модема" else "Сеть: разрешите доступ к телефону"
             signalDetails.text = "Нет измерения"
             showSignalBars(0)
+            refreshCameraStatus()
             return
         }
         val operator = cell?.operator?.takeIf { it.isNotBlank() }
@@ -1366,6 +1398,7 @@ class MainActivity : Activity(), SensorEventListener {
         showSignalBars(level + 1)
         signalLabel.contentDescription = "Сеть " + network + ", уровень " +
             (level + 1) + " из 5; " + signalDetails.text
+        refreshCameraStatus()
     }
 
     private fun updateNeighborCells(cells: List<ServingCell>) {
@@ -1561,6 +1594,8 @@ class MainActivity : Activity(), SensorEventListener {
                     View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         }
         val prefs = getPreferences(Context.MODE_PRIVATE)
+        displayMode = DisplayModePolicy.normalize(
+            prefs.getString("display_mode", DisplayModePolicy.STANDARD))
         val storedLat = prefs.getString("manual_lat", null)?.toDoubleOrNull()
         val storedLon = prefs.getString("manual_lon", null)?.toDoubleOrNull()
         if (storedLat != null && storedLon != null &&
@@ -1594,6 +1629,7 @@ class MainActivity : Activity(), SensorEventListener {
             neighborsListener = ::updateNeighborCells
         )
         createScreen()
+        applyDisplayMode()
         mapView.onCreate(state)
         mapView.getMapAsync { ready ->
             map = ready
@@ -1750,6 +1786,33 @@ class MainActivity : Activity(), SensorEventListener {
         setContentView(rootView)
         mapView = MapView(this)
         rootView.addView(mapView, FrameLayout.LayoutParams(-1, -1))
+
+        // Only visible in immersive mode: real network state and current tower count.
+        // Geometry is calculated from DisplayCutout bounds, never from a phone model.
+        cameraStatusBand = FrameLayout(this).apply {
+            visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        rootView.addView(cameraStatusBand,
+            FrameLayout.LayoutParams(-1, dp(36), Gravity.TOP))
+        cameraNetworkChip = text("Сеть: ожидание", 10f, palette.text).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+            background = rounded(palette.surface, 12)
+        }
+        cameraTowersChip = text("Вышек: 0", 10f, palette.text).apply {
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(3), dp(8), dp(3))
+            background = rounded(palette.surface, 12)
+        }
+        cameraStatusBand.addView(cameraNetworkChip,
+            FrameLayout.LayoutParams(-2, dp(28), Gravity.TOP or Gravity.START))
+        cameraStatusBand.addView(cameraTowersChip,
+            FrameLayout.LayoutParams(-2, dp(28), Gravity.TOP or Gravity.END))
 
         // Small heading / GPS chip and always-reachable settings / full-screen controls.
         val header = row()
@@ -2138,10 +2201,15 @@ class MainActivity : Activity(), SensorEventListener {
      */
     private fun installSafeInsets() {
         rootView.setOnApplyWindowInsetsListener { _, insets ->
-            val top = if (Build.VERSION.SDK_INT >= 30)
+            val rawTop = if (Build.VERSION.SDK_INT >= 30)
                 insets.getInsets(WindowInsets.Type.statusBars() or
                     WindowInsets.Type.displayCutout()).top
+            else if (Build.VERSION.SDK_INT >= 28)
+                maxOf(insets.systemWindowInsetTop, insets.displayCutout?.safeInsetTop ?: 0)
             else insets.systemWindowInsetTop
+            val top = if (displayMode == DisplayModePolicy.FULLSCREEN)
+                maxOf(rawTop, dp(36)) else rawTop
+            updateCameraStatusLayout(insets)
             val bottom = if (Build.VERSION.SDK_INT >= 30)
                 insets.getInsets(WindowInsets.Type.navigationBars() or
                     WindowInsets.Type.displayCutout()).bottom
@@ -2163,6 +2231,114 @@ class MainActivity : Activity(), SensorEventListener {
             insets
         }
         rootView.post { rootView.requestApplyInsets() }
+    }
+
+    /**
+     * Android 15+ enforces edge-to-edge, so the map remains full-bleed in both modes.
+     * Only the status bar is hidden in immersive mode; navigation gestures remain available.
+     */
+    private fun applyDisplayMode() {
+        val fullscreen = displayMode == DisplayModePolicy.FULLSCREEN
+        if (Build.VERSION.SDK_INT >= 28) {
+            val attrs = window.attributes
+            attrs.layoutInDisplayCutoutMode = if (fullscreen)
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+            window.attributes = attrs
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.let { controller ->
+                controller.systemBarsBehavior =
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                if (fullscreen) controller.hide(WindowInsets.Type.statusBars())
+                else controller.show(WindowInsets.Type.statusBars())
+                val appearance = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                controller.setSystemBarsAppearance(if (palette.dark) 0 else appearance, appearance)
+            }
+        } else {
+            val icons = if (palette.dark) 0 else
+                View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            val flags = if (fullscreen) View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                else 0
+            window.decorView.systemUiVisibility = icons or flags
+        }
+        if (::cameraStatusBand.isInitialized) {
+            cameraStatusBand.visibility = if (fullscreen) View.VISIBLE else View.GONE
+            refreshCameraStatus()
+            rootView.requestApplyInsets()
+            rootView.post {
+                if (!isDestroyed) {
+                    rootView.requestApplyInsets()
+                    applyResponsiveLayout(false)
+                }
+            }
+        }
+    }
+
+    /** Compact network information inhabits only horizontal regions not blocked by cutouts. */
+    private fun refreshCameraStatus() {
+        if (!::cameraNetworkChip.isInitialized) return
+        val cell = servingCell
+        val radio = radioSignal?.takeIf {
+            SystemClock.elapsedRealtime() - it.measuredAt in 0..60000L
+        }
+        val network = cell?.network ?: radio?.network
+        val label = when (network?.uppercase(Locale.ROOT)) {
+            "LTE" -> "4G LTE"
+            "NR" -> "5G NR"
+            "UMTS", "WCDMA" -> "3G"
+            "GSM" -> "2G"
+            else -> network?.takeIf { it.isNotBlank() } ?: "Сеть"
+        }
+        val dbm = cell?.dbm ?: radio?.dbm
+        val networkText = label + (dbm?.let { " · ${it} dBm" } ?: "")
+        cameraNetworkChip.text = if (compactCameraStatus)
+            networkText + " · вышек ${sites.size}" else networkText
+        cameraTowersChip.text = "Вышек: ${sites.size}"
+    }
+
+    private fun updateCameraStatusLayout(insets: WindowInsets) {
+        if (!::cameraStatusBand.isInitialized ||
+            displayMode != DisplayModePolicy.FULLSCREEN) return
+        // When the user swipes down a transient system bar, don't paint over its icons.
+        if (Build.VERSION.SDK_INT >= 30 &&
+            insets.isVisible(WindowInsets.Type.statusBars())) {
+            cameraStatusBand.visibility = View.INVISIBLE
+            return
+        }
+        cameraStatusBand.visibility = View.VISIBLE
+        val w = rootView.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val cutouts = if (Build.VERSION.SDK_INT >= 28)
+            insets.displayCutout?.boundingRects.orEmpty()
+                .filter { it.top < dp(36) && it.bottom > 0 }
+                .map { it.left..it.right }
+        else emptyList()
+        val segments = DisplayModePolicy.topSegments(w, cutouts, dp(8))
+            .filter { it.width >= dp(100) }
+        val left = segments.firstOrNull() ?: run {
+            cameraNetworkChip.visibility = View.GONE
+            cameraTowersChip.visibility = View.GONE
+            return
+        }
+        val separate = segments.size > 1
+        compactCameraStatus = !separate
+        cameraNetworkChip.visibility = View.VISIBLE
+        cameraTowersChip.visibility = if (separate) View.VISIBLE else View.GONE
+        val networkWidth = minOf(left.width, dp(if (separate) 155 else 230))
+        cameraNetworkChip.layoutParams = FrameLayout.LayoutParams(
+            networkWidth, dp(28), Gravity.TOP or Gravity.START
+        ).apply { leftMargin = left.start; topMargin = dp(4) }
+        if (separate) {
+            val right = segments.last()
+            val towerWidth = minOf(right.width, dp(120))
+            cameraTowersChip.layoutParams = FrameLayout.LayoutParams(
+                towerWidth, dp(28), Gravity.TOP or Gravity.START
+            ).apply { leftMargin = right.endExclusive - towerWidth; topMargin = dp(4) }
+        }
+        refreshCameraStatus()
     }
 
     /** The same MapView survives rotation: only existing overlays change bounds. */
@@ -2303,6 +2479,7 @@ class MainActivity : Activity(), SensorEventListener {
         rootView.post {
             if (!isDestroyed) {
                 rootView.requestApplyInsets()
+                rootView.rootWindowInsets?.let(::updateCameraStatusLayout)
                 // Read the NEW measured viewport after Android has resized the window.
                 applyResponsiveLayout(false)
                 updateCrosshairCoordinates()
@@ -2852,6 +3029,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun emptyFeatures(): FeatureCollection = FeatureCollection.fromFeatures(emptyArray<Feature>())
 
     private fun showPins() {
+        refreshCameraStatus()
         visible = sites.filter {
             selectedOperator == null || (selectedOperator == unknown && it.operator == null) || it.operator == selectedOperator
         }
@@ -3155,6 +3333,7 @@ class MainActivity : Activity(), SensorEventListener {
         super.onResume()
         aimForeground = true
         mapView.onResume()
+        applyDisplayMode()
         updateSelectedAimLine()
         val prefs = getPreferences(Context.MODE_PRIVATE)
         if (prefs.getBoolean("yandex_return_hint", false)) {
