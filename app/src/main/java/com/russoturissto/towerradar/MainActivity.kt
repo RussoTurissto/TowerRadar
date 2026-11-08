@@ -922,7 +922,8 @@ class MainActivity : Activity(), SensorEventListener {
                 override fun onStartTrackingTouch(bar: SeekBar?) = Unit
                 override fun onStopTrackingTouch(bar: SeekBar?) = Unit
             })
-            panel.addView(seek, LinearLayout.LayoutParams(-1, dp(34)))
+            panel.addView(seek, LinearLayout.LayoutParams(-1,
+                dp(if (landscape) 26 else 34)))
         }
         sliderRow("Пунктирный луч", beamBrightness) {
             beamBrightness = it
@@ -2280,6 +2281,8 @@ class MainActivity : Activity(), SensorEventListener {
         rootView.post {
             if (!isDestroyed) {
                 rootView.requestApplyInsets()
+                // Read the NEW measured viewport after Android has resized the window.
+                applyResponsiveLayout(false)
                 updateCrosshairCoordinates()
                 updateOverlays()
                 map?.let { northIndicator.setMapBearing(it.cameraPosition.bearing) }
