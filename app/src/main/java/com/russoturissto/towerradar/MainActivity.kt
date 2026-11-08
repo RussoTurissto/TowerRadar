@@ -157,6 +157,8 @@ class MainActivity : Activity(), SensorEventListener {
     // Status and radio diagnostics are combined in topStatusPanel.
     private lateinit var mapTileCache: MapTileCache
     private lateinit var mapView: MapView
+    private var yandexWebMap: YandexWebMap? = null
+    private lateinit var profileButton: Button
     private lateinit var locationFusion: LocationFusion
     private val cellExecutor = Executors.newSingleThreadExecutor()
     private lateinit var gpsLabel: TextView
@@ -291,6 +293,12 @@ class MainActivity : Activity(), SensorEventListener {
     private fun applyBasemap(provider: MapProvider, key: String = "",
                              session: GoogleTileSession? = null) {
         val current = map ?: return
+        if (MapSources.yandexWeb(provider)) {
+            showYandexWeb(provider, key)
+            return
+        }
+        yandexWebMap?.hide()
+        mapView.visibility = View.VISIBLE
         if (provider.id.startsWith("google-") && (session == null || !session.valid())) {
             mapStatus.text = "Google · требуется действующий сеанс Map Tiles API"
             return
@@ -477,6 +485,70 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
 
+
+    private fun showYandexWeb(provider: MapProvider, key: String) {
+        val current = map ?: return
+        if (key.isBlank()) { requestMapKey(provider); return }
+        if (yandexWebMap == null) {
+            val bridge = YandexWebMap(this,
+                onCamera = { lat, lon, zoom ->
+                    if (yandexWebMap?.showing == true) {
+                        current.moveCamera(CameraUpdateFactory.newCameraPosition(
+                            CameraPosition.Builder().target(LatLng(lat, lon))
+                                .zoom(zoom).bearing(0.0).tilt(0.0).build()))
+                        persistLastCamera()
+                    }
+                },
+                onSelect = { lat, lon ->
+                    val point = LatLng(lat, lon)
+                    if (isChoosingCrosshair) {
+                        center = point
+                        current.moveCamera(CameraUpdateFactory.newLatLng(point))
+                        updateCrosshairCoordinates()
+                    } else selectTower(point)
+                },
+                onLongTap = { lat, lon -> showElevationAtPoint(LatLng(lat, lon)) },
+                onError = { message ->
+                    if (::mapStatus.isInitialized) mapStatus.text = message
+                    Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+                })
+            yandexWebMap = bridge
+            // Keep all native diagnostic overlays, compass, bottom sheet and
+            // top-right actions ABOVE the alternate map engine.
+            rootView.addView(bridge.view, 1, FrameLayout.LayoutParams(-1, -1))
+        }
+        val mode = when (provider.id) {
+            "yandex-js-satellite" -> "yandex#satellite"
+            "yandex-js-hybrid" -> "yandex#hybrid"
+            else -> "yandex#map"
+        }
+        providerIndex = MapSources.providers.indexOf(provider).coerceAtLeast(0)
+        getPreferences(Context.MODE_PRIVATE).edit()
+            .putString("map_last_resolved", provider.id).apply()
+        mapView.visibility = View.INVISIBLE
+        val camera = current.cameraPosition
+        val p = camera.target ?: LatLng(55.75, 37.62)
+        yandexWebMap?.show(key, mode, p.latitude, p.longitude, camera.zoom)
+        mapAttribution.text = "© Яндекс Карты"
+        mapAttribution.isClickable = true
+        mapAttribution.setOnClickListener {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://yandex.ru/legal/maps_api/")))
+            } catch (_: Exception) {}
+        }
+        mapStatus.text = provider.name + " · JavaScript API"
+        syncYandexObjects()
+    }
+
+    private fun syncYandexObjects() {
+        val bridge = yandexWebMap ?: return
+        if (!bridge.showing) return
+        val p = activeUserPoint()
+        bridge.setObjects(visible, p?.let { it.latitude to it.longitude },
+            servingSite, selectedAimSite)
+    }
+
     /** Select a reachable raster tile host using a single low-zoom tile request. */
     private fun chooseBasemap() {
         if (choosingMap) return
@@ -507,6 +579,13 @@ class MainActivity : Activity(), SensorEventListener {
         val key = provider.keyPref?.let {
             getPreferences(Context.MODE_PRIVATE).getString(it, "").orEmpty()
         }.orEmpty()
+        if (MapSources.yandexWeb(provider)) {
+            if (key.isBlank()) { requestMapKey(provider); return }
+            getPreferences(Context.MODE_PRIVATE).edit()
+                .putString("map_provider", provider.id).apply()
+            applyBasemap(provider, key)
+            return
+        }
         // Public OSM sources may be reopened without internet: MapLibre can
         // draw already valid ambient cached tiles with no preflight HTTP call.
         if (provider.keyPref == null) {
@@ -667,6 +746,9 @@ class MainActivity : Activity(), SensorEventListener {
         }
         val address = when {
             provider.id == "yandex" -> "developer.tech.yandex.ru (Tiles API)"
+            MapSources.yandexWeb(provider) ->
+                "developer.tech.yandex.ru (JavaScript API · отдельный ключ)"
+            MapSources.mapTiler(provider) -> "cloud.maptiler.com (Free · некоммерческое)"
             provider.id.startsWith("google-") -> "console.cloud.google.com (Map Tiles API)"
             else -> "platform.2gis.ru (Raster Tiles API)"
         }
@@ -675,6 +757,8 @@ class MainActivity : Activity(), SensorEventListener {
             .setMessage(
                 "Для этой карты нужен личный API-ключ. " +
                     "Получите его на " + address + ". Доступ и лимиты определяет поставщик. " +
+                    (if (MapSources.yandexWeb(provider)) "Для JS API в WebView при ограничении ключа " +
+                        "по Referer укажите com.russoturissto.towerradar. " else "") +
                     "Ключ хранится только на телефоне, без отправки в GitHub."
             )
             .setView(input)
@@ -717,7 +801,7 @@ class MainActivity : Activity(), SensorEventListener {
                 "Полноэкранный" else "Стандартный",
             "Геопозиция: " + if (manualPoint == null) "Автоматическая GPS" else "Ручная точка",
             "SIM для отслеживания",
-            "Подключения API: Яндекс · 2ГИС · Google · OpenCellID",
+            "Подключения API: Яндекс Tiles/JS · MapTiler · OpenCellID",
             "Индикатор направления: " + if (showCone) "Включён" else "Выключен",
             "Яркость луча и сектора: раздельная настройка",
             "Кеш карт: лимит " + mapTileCache.limitMb() + " МБ",
@@ -1081,6 +1165,7 @@ class MainActivity : Activity(), SensorEventListener {
         val stored = getPreferences(Context.MODE_PRIVATE).getString(pref, "").orEmpty()
         if (stored.isBlank()) return "Нет ключа"
         if (checkingApi.contains(pref)) return "⏳ Проверяем подключение…"
+        if (pref == "map_key_yandex_js") return "Ключ сохранён · проверка при открытии карты"
         val check = apiChecks[pref] ?: return "Ключ сохранён · не проверен"
         return if (check.connected) "✓ Подключено · сервер подтвердил"
             else "⚠ " + check.message
@@ -1140,9 +1225,10 @@ class MainActivity : Activity(), SensorEventListener {
             setPadding(dp(6), dp(4), dp(6), dp(12))
         })
         val connections = listOf(
-            Triple("map_key_yandex", "Яндекс Карты", "Tiles API"),
-            Triple("map_key_2gis", "2ГИС", "Raster Tiles API"),
-            Triple("map_key_google", "Google Maps", "Map Tiles API · 3 вида карты"),
+            Triple("map_key_yandex", "Яндекс Карты", "Tiles API · схема"),
+            Triple("map_key_yandex_js", "Яндекс JS · спутник / гибрид", "JavaScript API 2.1"),
+            Triple("map_key_maptiler", "MapTiler · карта / спутник / гибрид",
+                "Бесплатный тариф для личного некоммерческого использования"),
             Triple("opencellid_key", "OpenCellID", "Данные о сотах")
         )
         connectionStatusViews.clear()
@@ -1166,15 +1252,28 @@ class MainActivity : Activity(), SensorEventListener {
             cell.setOnClickListener {
                 when (pref) {
                     "map_key_yandex" -> showYandexSetup()
-                    "map_key_2gis" -> requestMapKey(
-                        MapSources.providers.first { it.id == "2gis" })
-                    "map_key_google" -> showGoogleSetup()
+                    "map_key_yandex_js" -> requestMapKey(
+                        MapSources.providers.first { it.id == "yandex-js-hybrid" })
+                    "map_key_maptiler" -> requestMapKey(
+                        MapSources.providers.first { it.id == "maptiler-streets" })
                     else -> editCellKey()
                 }
             }
             panel.addView(cell, LinearLayout.LayoutParams(-1, -2).apply {
                 bottomMargin = dp(7)
             })
+        }
+        val legalButton = styledButton("Условия использования Яндекс Карт ↗", 12f)
+        panel.addView(legalButton, LinearLayout.LayoutParams(-1, dp(40)).apply {
+            bottomMargin = dp(7)
+        })
+        legalButton.setOnClickListener {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://yandex.ru/legal/maps_api/")))
+            } catch (_: Exception) {
+                Toast.makeText(this, "Не удалось открыть ссылку", Toast.LENGTH_SHORT).show()
+            }
         }
         val retry = styledButton("↻  Проверить все подключения", 13f)
         panel.addView(retry, LinearLayout.LayoutParams(-1, dp(46)))
@@ -1194,7 +1293,7 @@ class MainActivity : Activity(), SensorEventListener {
             .setItems(arrayOf("Ввести или заменить API-ключ",
                 "Проверить подключение", "Открыть Google Cloud")) { _, selected ->
                 when (selected) {
-                    0 -> requestMapKey(MapSources.providers.first { it.id == "google-road" })
+                    0 -> requestMapKey(MapSources.allProviders.first { it.id == "google-road" })
                     1 -> verifyConnection("map_key_google")
                     2 -> try {
                         startActivity(Intent(Intent.ACTION_VIEW,
@@ -1213,8 +1312,8 @@ class MainActivity : Activity(), SensorEventListener {
         val selected = getPreferences(Context.MODE_PRIVATE)
             .getString("map_provider", "auto")
         val activePref = MapSources.providers.firstOrNull { it.id == selected }?.keyPref
-        for (pref in listOf("map_key_yandex", "map_key_2gis",
-            "map_key_google", "opencellid_key")) {
+        for (pref in listOf("map_key_yandex",
+            "map_key_maptiler", "opencellid_key")) {
             if (!skipActive || pref != activePref) verifyConnection(pref)
         }
     }
@@ -1777,7 +1876,8 @@ class MainActivity : Activity(), SensorEventListener {
             when {
                 saved == null -> { applyBasemap(MapSources.providers[0]); chooseBasemap() }
                 saved.keyPref == null -> applyBasemap(saved)
-                saved.id == "yandex" || saved.id == "2gis" -> {
+                saved.id == "yandex" || MapSources.yandexWeb(saved) ||
+                    MapSources.mapTiler(saved) -> {
                     val key = prefs.getString(saved.keyPref, "").orEmpty()
                     if (key.isNotBlank()) {
                         applyBasemap(saved, key)
@@ -1790,6 +1890,10 @@ class MainActivity : Activity(), SensorEventListener {
                     }
                 }
                 else -> useMapChoice(saved) // Google requires a fresh session token.
+            }
+            ready.addOnMapLongClickListener { tapped ->
+                showElevationAtPoint(tapped)
+                true
             }
             ready.addOnMapClickListener { tapped ->
                 if (isChoosingCrosshair) {
@@ -2239,16 +2343,7 @@ class MainActivity : Activity(), SensorEventListener {
             topMargin = dp(7)
         })
         neighborsButton.setOnClickListener { showNeighborCells() }
-        val registriesButton = styledButton("Реестры антенн · официальные источники", 12f)
-        controls.addView(registriesButton, LinearLayout.LayoutParams(-1, dp(43)).apply {
-            topMargin = dp(6)
-        })
-        registriesButton.setOnClickListener { showAntennaRegistries() }
-
-        controls.addView(sectionTitle("ДОПОЛНИТЕЛЬНО"))
-        val settingsControl = styledButton("Открыть настройки · оформление / компас", 12f)
-        controls.addView(settingsControl, LinearLayout.LayoutParams(-1, dp(44)))
-        settingsControl.setOnClickListener { showSettings() }
+        // Removed duplicate Settings and obsolete antenna-registry menu items.
 
         // Detail panel sits above the bottom sheet only when a pin is selected.
         details = LinearLayout(this).apply {
@@ -2275,6 +2370,13 @@ class MainActivity : Activity(), SensorEventListener {
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         details.addView(detailBody)
+        profileButton = styledButton("⌁  Профиль высот", 13f).apply {
+            visibility = View.GONE
+            setOnClickListener { selectedAimSite?.let(::showElevationProfile) }
+        }
+        details.addView(profileButton, LinearLayout.LayoutParams(-1, dp(43)).apply {
+            topMargin = dp(8)
+        })
 
         // The actual copyright must remain visible, but should not look
         // like another large map control. A subtle outline keeps it legible.
@@ -2619,10 +2721,10 @@ class MainActivity : Activity(), SensorEventListener {
                 gravity = Gravity.END or Gravity.BOTTOM
                 rightMargin = systemRightInset + sideWidth + dp(12)
                 topMargin = 0
-                // Map-only fullscreen hides the rail but keeps the compass.
-                // Its resting place is immediately over the former 50dp panel.
+                // The footer disappears in map fullscreen: land at the real
+                // lower-right SAFE screen corner, above gesture navigation.
                 bottomMargin = if (mapFullscreen)
-                    systemBottomInset + dp(59)
+                    systemBottomInset + dp(7)
                 else railBottom + dp(3 * (49 + 8) + 5)
             }
         crosshairControls.layoutParams =
@@ -2812,7 +2914,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     /**
      * Entering map-only fullscreen: the compass drops vertically at its existing
-     * right-hand X coordinate, lands over the 50dp footer and rebounds three times.
+     * right-hand X coordinate, lands at the safe lower screen edge and rebounds three times.
      * Exiting: never animate upwards; restore the normal anchored position instantly.
      */
     private fun setMapFullscreen(full: Boolean) {
@@ -3086,6 +3188,7 @@ class MainActivity : Activity(), SensorEventListener {
         if (map == null) return
         initiallyCentered = true
         map?.animateCamera(CameraUpdateFactory.newLatLngZoom(position, 12.5), 600)
+        yandexWebMap?.move(position.latitude, position.longitude, 12.5)
     }
 
     private fun cache(latitude: Double, longitude: Double, range: Int): List<TowerSite>? {
@@ -3325,12 +3428,14 @@ class MainActivity : Activity(), SensorEventListener {
             if (previousId != null) {
                 servingSite = null
                 updateOverlays()
+                syncYandexObjects()
             }
             return
         }
         if (reading.identity != previousId) {
             servingSite = null
             updateOverlays()
+            syncYandexObjects()
         }
         refreshSignalDisplay()
         if (!reading.validId) {
@@ -3347,6 +3452,7 @@ class MainActivity : Activity(), SensorEventListener {
             servingSite = matching
             cellStatus.text = "Сота " + reading.cellId + " · " + matching.source
             updateOverlays()
+            syncYandexObjects()
             return
         }
         if (servingSite != null) {
@@ -3384,6 +3490,7 @@ class MainActivity : Activity(), SensorEventListener {
                     "Сота " + reading.cellId + " · координаты неизвестны во всех источниках"
                 else "Сота " + reading.cellId + " · оценка " + site.source
                 updateOverlays()
+                syncYandexObjects()
             }
         }
     }
@@ -3422,6 +3529,7 @@ class MainActivity : Activity(), SensorEventListener {
             (sourceFilter == null || it.source.contains(sourceFilter!!, true))
         }
         refreshCameraStatus()
+        syncYandexObjects()
         if (!styled) return
         val features = visible.map { site ->
             Feature.fromGeometry(Point.fromLngLat(site.longitude, site.latitude)).apply {
@@ -3476,6 +3584,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun updateDot() {
+        syncYandexObjects()
         if (!styled) return
         val point = activeUserPoint()
         val features = if (point == null) emptyFeatures() else FeatureCollection.fromFeatures(
@@ -3620,6 +3729,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun clearAimSelection() {
         if (selectedAimSite == null) return
         selectedAimSite = null
+        syncYandexObjects()
         aimAligned = false
         aimAlignmentInitialized = false
         updateSelectedAimLine()
@@ -3690,24 +3800,153 @@ class MainActivity : Activity(), SensorEventListener {
     private fun activeUserPoint(): LatLng? =
         manualPoint ?: location?.let { LatLng(it.latitude, it.longitude) }
 
+
+    /** Elevation graph remains fully native, inheriting both Khaki Modern themes. */
+    private fun showElevationProfile(site: TowerSite) {
+        val from = location?.takeIf {
+            hasLocation() && System.currentTimeMillis() - it.time in 0L..120000L
+        }
+        if (from == null) {
+            KhakiDialogBuilder(this, palette).setTitle("Профиль высот")
+                .setMessage("Для профиля между вами и вышкой нужна актуальная GPS-позиция. " +
+                    "Включите геолокацию, дождитесь координат и повторите.")
+                .setPositiveButton("Понятно", null).show()
+            return
+        }
+        val startLat = from.latitude
+        val startLon = from.longitude
+        val graph = TerrainProfileView(this, palette).apply {
+            background = rounded(palette.elevated, 15)
+            contentDescription = "График высот от вашего GPS до выбранной вышки"
+        }
+        val header = text("Получаем данные о высоте местности…", 13f, palette.text)
+        val detailsLine = text("Проведите пальцем по графику для просмотра высот",
+            12f, palette.secondary)
+        graph.onInspect = { detailsLine.text = it }
+        val caveat = text("Высоты относятся к рельефу, а не к самой антенне. " +
+            "Влияние зданий, деревьев и зоны Френеля не рассчитывается.",
+            11f, palette.secondary)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+        }
+        content.addView(header, LinearLayout.LayoutParams(-1, -2).apply {
+            bottomMargin = dp(8)
+        })
+        content.addView(graph, LinearLayout.LayoutParams(-1, dp(232)))
+        content.addView(detailsLine, LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = dp(8)
+        })
+        content.addView(caveat, LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = dp(8)
+        })
+        val dialog = KhakiDialogBuilder(this, palette)
+            .setTitle("Профиль высот · TowerRadar")
+            .setView(content)
+            .setPositiveButton("Готово", null).show()
+        val key = getPreferences(Context.MODE_PRIVATE).getString(
+            "map_key_maptiler", "").orEmpty()
+        apiExecutor.execute {
+            val outcome = try {
+                TerrainProfileClient.load(applicationContext, startLat, startLon,
+                    site.latitude, site.longitude, key) to null
+            } catch (e: Exception) {
+                null to (e.message ?: "Высоты временно недоступны")
+            }
+            runOnUiThread {
+                if (!dialog.isShowing || isDestroyed || isFinishing) return@runOnUiThread
+                val terrain = outcome.first
+                if (terrain == null) {
+                    header.text = outcome.second
+                    detailsLine.text = "Нет достоверных измерений — график не построен"
+                    graph.visibility = View.GONE
+                    return@runOnUiThread
+                }
+                graph.profile = terrain
+                val first = terrain.samples.firstOrNull()?.elevation
+                val last = terrain.samples.lastOrNull()?.elevation
+                val a = first?.let { kotlin.math.round(it).toInt().toString() + " м" } ?: "н/д"
+                val b = last?.let { kotlin.math.round(it).toInt().toString() + " м" } ?: "н/д"
+                val diff = if (first == null || last == null) "н/д"
+                    else String.format(Locale.US, "%+.0f м", last - first)
+                header.text = "Вы: " + a + "   ·   Вышка: " + b +
+                    "\nПерепад: " + diff
+                detailsLine.text = "Коснитесь линии рельефа для просмотра высоты"
+                val mast = site.height?.trim()?.replace(',', '.')?.let {
+                    Regex("^([0-9]+(?:\\.[0-9]+)?)\\s*(?:м|m)?$",
+                        RegexOption.IGNORE_CASE).matchEntire(it)
+                        ?.groupValues?.getOrNull(1)?.toDoubleOrNull()
+                }?.takeIf { it in 1.0..500.0 }
+                if (mast != null) {
+                    graph.towerHeightMeters = mast
+                    caveat.text = "Пунктир — условная прямая до верха конструкции " +
+                        "(высота " + mast.toInt() + " м по OSM), не до антенны. " +
+                        "Не учтены здания, деревья и зона Френеля.\n" + terrain.source
+                } else {
+                    caveat.text = "Высота антенны неизвестна: достоверную линию " +
+                        "радиовидимости построить нельзя. Не учтены здания и деревья.\n" +
+                        terrain.source
+                }
+            }
+        }
+    }
+
+    /** Long-press on a map shows altitude of any specific point. */
+    private fun showElevationAtPoint(point: LatLng) {
+        val loading = KhakiDialogBuilder(this, palette).setTitle("Высота точки")
+            .setMessage("Запрашиваем высоту рельефа над уровнем моря для координат " +
+                String.format(Locale.US, "%.5f, %.5f", point.latitude, point.longitude))
+            .setPositiveButton("Закрыть", null).show()
+        val key = getPreferences(Context.MODE_PRIVATE)
+            .getString("map_key_maptiler", "").orEmpty()
+        apiExecutor.execute {
+            val outcome = try {
+                val p = TerrainProfileClient.load(applicationContext,
+                    point.latitude, point.longitude, point.latitude, point.longitude, key)
+                p.samples.firstNotNullOfOrNull { it.elevation }?.let {
+                    String.format(Locale.US, "Высота местности: %.0f м", it) +
+                        "\nИсточник: " + p.source
+                } ?: "Для этой точки нет сведений о высоте"
+            } catch (e: Exception) {
+                e.message ?: "Сервис высот недоступен"
+            }
+            runOnUiThread {
+                if (loading.isShowing && !isDestroyed) {
+                    loading.dismiss()
+                    KhakiDialogBuilder(this, palette).setTitle("Высота точки")
+                        .setMessage(outcome).setPositiveButton("Закрыть", null).show()
+                }
+            }
+        }
+    }
+
     private fun selectTower(tapped: LatLng) {
         val currentMap = map ?: return
+        val web = yandexWebMap?.showing == true
         val touch = currentMap.projection.toScreenLocation(tapped)
         val nearest = visible.minByOrNull {
-            val p = currentMap.projection.toScreenLocation(LatLng(it.latitude, it.longitude))
-            hypot((p.x - touch.x).toDouble(), (p.y - touch.y).toDouble())
+            if (web) TowerData.distanceKm(
+                tapped.latitude, tapped.longitude, it.latitude, it.longitude)
+            else {
+                val p = currentMap.projection.toScreenLocation(LatLng(it.latitude, it.longitude))
+                hypot((p.x - touch.x).toDouble(), (p.y - touch.y).toDouble())
+            }
         } ?: run {
             details.visibility = View.GONE
             clearAimSelection()
             return
         }
         val p = currentMap.projection.toScreenLocation(LatLng(nearest.latitude, nearest.longitude))
-        if (hypot((p.x - touch.x).toDouble(), (p.y - touch.y).toDouble()) > dp(30)) {
+        val far = if (web) TowerData.distanceKm(tapped.latitude, tapped.longitude,
+            nearest.latitude, nearest.longitude) > .07
+        else hypot((p.x - touch.x).toDouble(), (p.y - touch.y).toDouble()) > dp(30)
+        if (far) {
             details.visibility = View.GONE
             clearAimSelection()
             return
         }
         selectedAimSite = nearest
+        syncYandexObjects()
         aimAligned = false
         aimAlignmentInitialized = false
         updateSelectedAimLine()
@@ -3749,7 +3988,9 @@ class MainActivity : Activity(), SensorEventListener {
             },
             "Источник: " + nearest.url
         ).joinToString("\n")
+        profileButton.visibility = View.VISIBLE
         details.visibility = View.VISIBLE
+        syncYandexObjects()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -3769,6 +4010,7 @@ class MainActivity : Activity(), SensorEventListener {
         super.onResume()
         aimForeground = true
         mapView.onResume()
+        yandexWebMap?.onResume()
         applyDisplayMode()
         updateSelectedAimLine()
         updateServingPulse()
@@ -3811,6 +4053,7 @@ class MainActivity : Activity(), SensorEventListener {
         sensorManager.unregisterListener(this)
         cellMonitor.stop()
         locationFusion.stop()
+        yandexWebMap?.onPause()
         mapView.onPause()
         super.onPause()
     }
@@ -3838,6 +4081,7 @@ class MainActivity : Activity(), SensorEventListener {
         executor.shutdownNow()
         apiExecutor.shutdownNow()
         cellExecutor.shutdownNow()
+        yandexWebMap?.destroy()
         mapView.onDestroy()
         super.onDestroy()
     }

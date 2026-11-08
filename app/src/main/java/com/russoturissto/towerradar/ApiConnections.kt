@@ -96,11 +96,35 @@ object ApiConnections {
         } finally { connection.disconnect() }
     }
 
+    /** MapTiler vector style endpoint returns JSON, unlike PNG tile APIs. */
+    private fun styleCheck(url: String, name: String): ApiProbe {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 6500
+        c.readTimeout = 6500
+        return try {
+            val code = c.responseCode
+            if (code !in 200..299) failure(code, name)
+            else {
+                val response = c.inputStream.bufferedReader().use { it.readText().take(7000) }
+                if (response.contains("\"version\"") &&
+                    response.contains("\"sources\"")) {
+                    ApiProbe(true, "✓ Подключено · стиль карты получен", code)
+                } else ApiProbe(false, name + " · ответ не содержит стиль карты", code)
+            }
+        } finally { c.disconnect() }
+    }
+
     fun checkMap(provider: MapProvider, lat: Double, lon: Double, key: String): ApiProbe {
         if (provider.keyPref != null && key.isBlank()) return ApiProbe(false, "Ключ не введён")
         return try {
-            if (provider.id.startsWith("google-")) googleSession(key, provider)
-            else tileCheck(MapSources.sampleTileUrl(provider, lat, lon, key), provider.name)
+            when {
+                provider.id.startsWith("google-") -> googleSession(key, provider)
+                MapSources.mapTiler(provider) ->
+                    styleCheck(MapSources.tileTemplate(provider, key), provider.name)
+                MapSources.yandexWeb(provider) ->
+                    ApiProbe(false, "Ключ JavaScript API проверяется при открытии WebView")
+                else -> tileCheck(MapSources.sampleTileUrl(provider, lat, lon, key), provider.name)
+            }
         } catch (_: java.net.SocketTimeoutException) {
             ApiProbe(false, provider.name + " · сервер не ответил вовремя")
         } catch (_: java.net.UnknownHostException) {

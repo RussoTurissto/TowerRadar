@@ -1,4 +1,4 @@
-name: Publish verified TowerRadar v0.21.0 APK
+name: Publish verified TowerRadar v0.22.0 APK
 on:
   workflow_run:
     workflows: ["Build Android APK"]
@@ -60,7 +60,7 @@ jobs:
           expected="$(awk '{print $1}' checks/sha256.txt)"
           actual="$(sha256sum extracted/towerradar-signed.apk | awk '{print $1}')"
           test "$expected" = "$actual"
-          cp extracted/towerradar-signed.apk TowerRadar-v0.21.0.apk
+          cp extracted/towerradar-signed.apk TowerRadar-v0.22.0.apk
           echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish direct GitHub Release APK download
@@ -70,15 +70,15 @@ jobs:
           TARGET_SHA: ${{ steps.selection.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view v0.21.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit v0.21.0 --prerelease --repo "$GITHUB_REPOSITORY"
-            gh release upload v0.21.0 TowerRadar-v0.21.0.apk --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.22.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit v0.22.0 --prerelease --repo "$GITHUB_REPOSITORY"
+            gh release upload v0.22.0 TowerRadar-v0.22.0.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.21.0 TowerRadar-v0.21.0.apk \
+            gh release create v0.22.0 TowerRadar-v0.22.0.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
-              --title "TowerRadar v0.21.0 — компас, пульсация и подписи карт" \
-              --notes "TowerRadar 0.21.0: при переходе в полноэкранную карту компас плавно падает к нижней панели и трижды подпрыгивает, сохраняя правую координату; при выходе мгновенно возвращается над кнопками. Настоящая лёгкая пульсация только найденной обслуживающей соты, без анимации столбиков сигнала. Индикатор мощности приподнят. Прогресс-бар и обязательные подписи карт больше не накладываются друг на друга, а правая панель кнопок остаётся открытой. Прежняя утверждённая летучая мышь возвращена без отдельной квадратной подложки, с прозрачным foreground и безопасным размером. Тесты, Android Lint, постоянная подпись APK." \
+              --title "TowerRadar v0.22.0 — бесплатные карты и график высот" \
+              --notes "TowerRadar 0.22.0: компас падает в нижний правый безопасный угол с тремя отскоками и мгновенно возвращается при выходе. Удалены пункты реестров антенн и дублирующих настроек. Бесплатные источники OSM, Яндекс Tiles, Яндекс JavaScript API 2.1 (схема, спутник, гибрид) и MapTiler (карта, спутник, гибрид) при персональном бесплатном ключе. Платные Google и 2ГИС исключены из выбора без удаления сохранённых ключей. Профиль рельефа между GPS и вышкой с интерактивным графиком в стиле TowerRadar, данные OpenTopoData и MapTiler; высота точки по долгому нажатию. Без вымышленных измерений. Подписи источников сохранены. Автоматические тесты, Android lint и проверка постоянной подписи." \
               --prerelease
           fi
-          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.21.0/TowerRadar-v0.21.0.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.22.0/TowerRadar-v0.22.0.apk" >> "$GITHUB_STEP_SUMMARY"

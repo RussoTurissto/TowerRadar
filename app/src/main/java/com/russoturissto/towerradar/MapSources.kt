@@ -19,7 +19,7 @@ data class MapProvider(
 )
 
 object MapSources {
-    val providers = listOf(
+    val allProviders = listOf(
         MapProvider("osmfr", "OSM France · местные названия",
             "https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png",
             "© OpenStreetMap contributors · OpenStreetMap France"),
@@ -35,6 +35,23 @@ object MapSources {
         MapProvider("yandex", "Яндекс Карты · русский",
             "https://tiles.api-maps.yandex.ru/v1/tiles/?x={x}&y={y}&z={z}&l=map&lang=ru_RU&projection=web_mercator&scale=2&apikey={api_key}",
             "© Яндекс Карты", "map_key_yandex"),
+        // Separate JS API key: Tiles API does NOT support satellite/hybrid.
+        MapProvider("yandex-js-road", "Яндекс JS · Схема",
+            "", "© Яндекс Карты", "map_key_yandex_js"),
+        MapProvider("yandex-js-satellite", "Яндекс JS · Спутник",
+            "", "© Яндекс Карты", "map_key_yandex_js"),
+        MapProvider("yandex-js-hybrid", "Яндекс JS · Гибрид",
+            "", "© Яндекс Карты", "map_key_yandex_js"),
+        // Personal/noncommercial free API plan, subject to MapTiler limits.
+        MapProvider("maptiler-streets", "MapTiler · Карта",
+            "https://api.maptiler.com/maps/streets-v4/style.json?key={api_key}",
+            "© MapTiler · © OpenStreetMap contributors", "map_key_maptiler"),
+        MapProvider("maptiler-satellite", "MapTiler · Спутник",
+            "https://api.maptiler.com/maps/satellite/style.json?key={api_key}",
+            "© MapTiler · спутниковые данные", "map_key_maptiler"),
+        MapProvider("maptiler-hybrid", "MapTiler · Гибрид",
+            "https://api.maptiler.com/maps/hybrid/style.json?key={api_key}",
+            "© MapTiler · © OpenStreetMap contributors", "map_key_maptiler"),
         MapProvider("2gis", "2ГИС · русский",
             "https://tile0.maps.2gis.com/v2/tiles/online_sd/{z}/{x}/{y}.png?key={api_key}",
             "© 2ГИС", "map_key_2gis"),
@@ -49,10 +66,15 @@ object MapSources {
             "Google Maps", "map_key_google")
     )
 
+    // Paid/billing-required providers are hidden but their existing keys are not erased.
+    val providers = allProviders.filter { it.id != "2gis" && !it.id.startsWith("google-") }
+    fun yandexWeb(provider: MapProvider) = provider.id.startsWith("yandex-js-")
+    fun mapTiler(provider: MapProvider) = provider.id.startsWith("maptiler-")
     fun unkeyed(): List<MapProvider> = providers.filter { it.keyPref == null }
 
     fun tileTemplate(provider: MapProvider, key: String = "", session: String = ""): String {
         if (provider.keyPref != null) require(key.isNotBlank()) { "Требуется ключ " + provider.name }
+        require(!yandexWeb(provider)) { "Yandex JS API renders through WebView, not tiles" }
         if (provider.id.startsWith("google-")) require(session.isNotBlank()) {
             "Необходимо открыть сеанс Google Map Tiles API"
         }
@@ -62,6 +84,7 @@ object MapSources {
     }
 
     fun style(provider: MapProvider, key: String = "", session: String = ""): Style.Builder {
+        if (mapTiler(provider)) return Style.Builder().fromUri(tileTemplate(provider, key))
         val tileSet = TileSet("2.2.0", tileTemplate(provider, key, session))
         tileSet.setMinZoom(0f)
         tileSet.setMaxZoom(when {
@@ -96,7 +119,8 @@ object MapSources {
 
     fun reachable(provider: MapProvider, lat: Double, lon: Double, key: String = ""): Boolean {
         if (provider.keyPref != null && key.isBlank()) return false
-        if (provider.id.startsWith("google-")) return false // session required
+        if (provider.id.startsWith("google-") || yandexWeb(provider) || mapTiler(provider))
+            return false // session, WebView or vector style, not directly testable as PNG
         val connection = (URL(sampleTileUrl(provider, lat, lon, key)).openConnection() as HttpURLConnection)
         connection.connectTimeout = 4500
         connection.readTimeout = 4500
