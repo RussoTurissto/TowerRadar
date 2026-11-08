@@ -134,6 +134,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var floatingRail: LinearLayout
     private lateinit var fullScreenButton: Button
     private var sheetExpanded = false
+    private var mapFullscreen = false
 
     // Independent of the map-only ⛶ button: system chrome and camera-safe top information.
     private var displayMode = DisplayModePolicy.STANDARD
