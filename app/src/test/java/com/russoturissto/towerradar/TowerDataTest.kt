@@ -39,7 +39,9 @@ class TowerDataTest {
     }
     @Test fun russianProvidersNeedKeys() {
         val yandex = MapSources.providers.first { it.id == "yandex" }
-        val twoGis = MapSources.providers.first { it.id == "2gis" }
+        val twoGis = MapSources.allProviders.first { it.id == "2gis" }
+        // Existing paid integration is retained for saved keys, not in the free picker.
+        assertFalse(MapSources.providers.any { it.id == "2gis" })
         assertTrue(MapSources.tileTemplate(yandex, "secret123").contains("lang=ru_RU"))
         assertTrue(MapSources.tileTemplate(yandex, "secret123").contains("projection=web_mercator"))
         assertTrue(MapSources.tileTemplate(twoGis, "test").contains("online_sd"))
