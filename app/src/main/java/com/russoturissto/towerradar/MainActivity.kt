@@ -101,6 +101,9 @@ class MainActivity : Activity(), SensorEventListener {
     private val executor = Executors.newSingleThreadExecutor()
     private val apiExecutor = Executors.newFixedThreadPool(2)
     private lateinit var topHeader: LinearLayout
+    private lateinit var topStatusPanel: TowerStatusHeader
+    private lateinit var statusBarProtection: View
+    private var topPanelHeight = 0
     private lateinit var crosshairReticle: CrosshairView
     private lateinit var northIndicator: NorthIndicatorView
     private var directionPanel: LinearLayout? = null
@@ -133,6 +136,9 @@ class MainActivity : Activity(), SensorEventListener {
     private var consumingOutsidePanelGesture = false
     private lateinit var sheetExtra: ScrollView
     private lateinit var sheetHandle: TextView
+    private lateinit var compactSignalBars: LinearLayout
+    private lateinit var expandedSignalRow: LinearLayout
+    private lateinit var compactHandleRow: FrameLayout
     private lateinit var floatingRail: LinearLayout
     private lateinit var fullScreenButton: Button
     private var sheetExpanded = false
@@ -140,10 +146,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     // Independent of the map-only ⛶ button: system chrome and camera-safe top information.
     private var displayMode = DisplayModePolicy.STANDARD
-    private lateinit var cameraStatusBand: FrameLayout
-    private lateinit var cameraNetworkChip: TextView
-    private lateinit var cameraTowersChip: TextView
-    private var compactCameraStatus = false
+    // Status and radio diagnostics are combined in topStatusPanel.
     private lateinit var mapTileCache: MapTileCache
     private lateinit var mapView: MapView
     private lateinit var locationFusion: LocationFusion
@@ -1887,54 +1890,28 @@ class MainActivity : Activity(), SensorEventListener {
         mapView = MapView(this)
         rootView.addView(mapView, FrameLayout.LayoutParams(-1, -1))
 
-        // Only visible in immersive mode: real network state and current tower count.
-        // Geometry is calculated from DisplayCutout bounds, never from a phone model.
-        cameraStatusBand = FrameLayout(this).apply {
-            visibility = View.GONE
+        // Unify the diagnostic readouts in one adaptive full-width bar.
+        // The separate scrim protects Android status icons over any map tile.
+        statusBarProtection = View(this).apply {
+            setBackgroundColor(Color.rgb(37, 49, 36))
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        rootView.addView(cameraStatusBand,
-            FrameLayout.LayoutParams(-1, dp(36), Gravity.TOP))
-        cameraNetworkChip = text("Сеть: ожидание", 10f, palette.text).apply {
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(3), dp(8), dp(3))
-            background = rounded(palette.surface, 12)
-        }
-        cameraTowersChip = text("Вышек: 0", 10f, palette.text).apply {
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(3), dp(8), dp(3))
-            background = rounded(palette.surface, 12)
-        }
-        cameraStatusBand.addView(cameraNetworkChip,
-            FrameLayout.LayoutParams(-2, dp(28), Gravity.TOP or Gravity.START))
-        cameraStatusBand.addView(cameraTowersChip,
-            FrameLayout.LayoutParams(-2, dp(28), Gravity.TOP or Gravity.END))
+        rootView.addView(statusBarProtection,
+            FrameLayout.LayoutParams(-1, dp(25), Gravity.TOP))
+        topStatusPanel = TowerStatusHeader(this)
+        rootView.addView(topStatusPanel,
+            FrameLayout.LayoutParams(-1, dp(61), Gravity.TOP))
+        headingView = topStatusPanel.headingLabel
+        gpsLabel = topStatusPanel.gpsLabel
+        topStatusPanel.onHeadingTap { showPositionOptions() }
+        topStatusPanel.onSignalTap { showSignalDetails() }
 
-        // Small heading / GPS chip and always-reachable settings / full-screen controls.
+        // System map-only fullscreen button and settings float BELOW the header.
         val header = row()
         topHeader = header
-        rootView.addView(header, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
-            setMargins(dp(12), dp(10), dp(12), 0)
-        })
-        val headingChip = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(7), dp(12), dp(7))
-            background = rounded(palette.surface, 17)
-            elevation = dp(6).toFloat()
-        }
-        header.addView(headingChip, LinearLayout.LayoutParams(0, -2, 1f))
-        headingView = text("➤ —°", 18f, palette.olive).apply {
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        headingChip.addView(headingView)
-        gpsLabel = text("GPS / Wi-Fi: ожидание", 11f, palette.secondary)
-        headingChip.addView(gpsLabel)
-        headingChip.setOnClickListener { showPositionOptions() }
+        rootView.addView(header, FrameLayout.LayoutParams(
+            -2, dp(44), Gravity.TOP or Gravity.END
+        ).apply { setMargins(0, dp(80), dp(12), 0) })
         fullScreenButton = styledButton("⛶", 19f).apply {
             contentDescription = "Полноэкранная карта"
             setOnClickListener { setMapFullscreen(!mapFullscreen) }
@@ -2012,22 +1989,27 @@ class MainActivity : Activity(), SensorEventListener {
         locate.setOnClickListener { useAutomaticPosition() }
         locate.setOnLongClickListener { showPositionOptions(); true }
 
-        // Bottom sheet: 84dp closed, up to ~72% of screen on demand.
+        // A slim 50dp collapsed sheet: only true signal bars at lower left and
+        // a centered, large touch target labelled "Подробнее".
         sheetView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = rounded(palette.surface, 22)
+            background = rounded(palette.surface, 20)
             elevation = dp(12).toFloat()
-            setPadding(dp(14), dp(3), dp(14), dp(7))
+            setPadding(dp(10), 0, dp(10), 0)
         }
-        rootView.addView(sheetView, FrameLayout.LayoutParams(-1, dp(84),
+        rootView.addView(sheetView, FrameLayout.LayoutParams(-1, dp(50),
             Gravity.BOTTOM).apply { setMargins(dp(6), 0, dp(6), 0) })
 
-        sheetHandle = text("⌃  Подробности", 11f, palette.secondary).apply {
+        compactHandleRow = FrameLayout(this)
+        sheetView.addView(compactHandleRow,
+            LinearLayout.LayoutParams(-1, dp(50)))
+        sheetHandle = text("⌃  Подробнее", 13f, palette.text).apply {
             gravity = Gravity.CENTER
-            setPadding(dp(8), 0, dp(8), 0)
-            contentDescription = "Развернуть панель управления"
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            contentDescription = "Раскрыть панель управления"
         }
-        sheetView.addView(sheetHandle, LinearLayout.LayoutParams(-1, dp(20)))
+        compactHandleRow.addView(sheetHandle, FrameLayout.LayoutParams(
+            -1, -1, Gravity.CENTER))
         sheetHandle.setOnClickListener { expandSheet(!sheetExpanded) }
         var touchY = 0f
         var touchX = 0f
@@ -2049,16 +2031,34 @@ class MainActivity : Activity(), SensorEventListener {
                 else -> true
             }
         }
+        compactSignalBars = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.BOTTOM
+            setPadding(dp(4), 0, dp(4), 0)
+            contentDescription = "Уровень сигнала. Нажмите для диагностики"
+            isClickable = true
+            setOnClickListener { showSignalDetails() }
+        }
+        for (h in listOf(9, 13, 17, 21, 25)) {
+            compactSignalBars.addView(View(this).apply {
+                background = rounded(palette.signalMuted, 3)
+            }, LinearLayout.LayoutParams(dp(8), dp(h)).apply { marginEnd = dp(3) })
+        }
+        compactHandleRow.addView(compactSignalBars, FrameLayout.LayoutParams(
+            -2, dp(29), Gravity.START or Gravity.CENTER_VERTICAL).apply {
+                leftMargin = dp(7)
+            })
 
-        val signalRow = row()
-        sheetView.addView(signalRow, LinearLayout.LayoutParams(-1, dp(29)))
+        // Detailed signal readouts remain in the expanded sheet only.
+        expandedSignalRow = row().apply { visibility = View.GONE }
+        sheetView.addView(expandedSignalRow, LinearLayout.LayoutParams(-1, dp(29)))
         signalLabel = text("Сеть: ожидаем SIM", 14f, palette.text).apply {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             gravity = Gravity.CENTER_VERTICAL
             setSingleLine(true)
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
-        signalRow.addView(signalLabel, LinearLayout.LayoutParams(0, dp(29), 1f))
+        expandedSignalRow.addView(signalLabel, LinearLayout.LayoutParams(0, dp(29), 1f))
         signalBars = LinearLayout(this).apply {
             gravity = Gravity.BOTTOM
             orientation = LinearLayout.HORIZONTAL
@@ -2068,13 +2068,14 @@ class MainActivity : Activity(), SensorEventListener {
                 background = rounded(palette.signalMuted, 3)
             }, LinearLayout.LayoutParams(dp(9), dp(h)).apply { marginStart = dp(3) })
         }
-        signalRow.addView(signalBars, LinearLayout.LayoutParams(-2, dp(25)))
+        expandedSignalRow.addView(signalBars, LinearLayout.LayoutParams(-2, dp(25)))
         signalDetails = text("Сигнал: нет измерения", 11f, palette.secondary).apply {
+            visibility = View.GONE
             setSingleLine(true)
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         sheetView.addView(signalDetails)
-        signalRow.setOnClickListener { showSignalDetails() }
+        expandedSignalRow.setOnClickListener { showSignalDetails() }
         signalDetails.setOnClickListener { showSignalDetails() }
 
         sheetExtra = ScrollView(this).apply {
@@ -2360,7 +2361,6 @@ class MainActivity : Activity(), SensorEventListener {
             else insets.systemWindowInsetTop
             val top = if (displayMode == DisplayModePolicy.FULLSCREEN)
                 maxOf(rawTop, dp(36)) else rawTop
-            updateCameraStatusLayout(insets)
             val bottom = if (Build.VERSION.SDK_INT >= 30)
                 insets.getInsets(WindowInsets.Type.navigationBars() or
                     WindowInsets.Type.displayCutout()).bottom
@@ -2379,7 +2379,14 @@ class MainActivity : Activity(), SensorEventListener {
                 systemRightInset = right
                 applyResponsiveLayout(false)
             }
+            updateCameraStatusLayout(insets)
             insets
+        }
+        // Layout bounds can change without a new insets dispatch (split-screen,
+        // display scaling, rotation). Recalculate from the measured viewport.
+        rootView.addOnLayoutChangeListener { _, l, _, r, _, oldL, _, oldR, _ ->
+            if (r - l != oldR - oldL)
+                rootView.rootWindowInsets?.let(::updateCameraStatusLayout)
         }
         rootView.post { rootView.requestApplyInsets() }
     }
@@ -2390,12 +2397,17 @@ class MainActivity : Activity(), SensorEventListener {
      */
     private fun applyDisplayMode() {
         val fullscreen = displayMode == DisplayModePolicy.FULLSCREEN
+        val protectedColor = Color.rgb(37, 49, 36)
+        // The status region is always protected by a stable opaque dark surface.
+        // This prevents white status icons disappearing over white map tiles.
+        window.statusBarColor = if (Build.VERSION.SDK_INT >= 30)
+            Color.TRANSPARENT else protectedColor
         if (Build.VERSION.SDK_INT >= 28) {
-            val attrs = window.attributes
-            attrs.layoutInDisplayCutoutMode = if (fullscreen)
+            val attributes = window.attributes
+            attributes.layoutInDisplayCutoutMode = if (fullscreen)
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
             else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
-            window.attributes = attrs
+            window.attributes = attributes
         }
         if (Build.VERSION.SDK_INT >= 30) {
             window.setDecorFitsSystemWindows(false)
@@ -2404,92 +2416,86 @@ class MainActivity : Activity(), SensorEventListener {
                     WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 if (fullscreen) controller.hide(WindowInsets.Type.statusBars())
                 else controller.show(WindowInsets.Type.statusBars())
-                val appearance = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
-                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-                controller.setSystemBarsAppearance(if (palette.dark) 0 else appearance, appearance)
+                // White status icons on the fixed dark scrim, independently of map/theme.
+                val statusFlag = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                controller.setSystemBarsAppearance(0, statusFlag)
+                val navFlag = WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                controller.setSystemBarsAppearance(if (palette.dark) 0 else navFlag, navFlag)
             }
         } else {
-            val icons = if (palette.dark) 0 else
-                View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
-            val flags = if (fullscreen) View.SYSTEM_UI_FLAG_FULLSCREEN or
-                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            val navIcons = if (palette.dark) 0 else View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            val flags = if (fullscreen)
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                 else 0
-            window.decorView.systemUiVisibility = icons or flags
+            window.decorView.systemUiVisibility = navIcons or flags
         }
-        if (::cameraStatusBand.isInitialized) {
-            cameraStatusBand.visibility = if (fullscreen) View.VISIBLE else View.GONE
-            refreshCameraStatus()
+        if (::topStatusPanel.isInitialized) {
+            statusBarProtection.visibility = if (fullscreen) View.GONE else View.VISIBLE
             rootView.requestApplyInsets()
             rootView.post {
                 if (!isDestroyed) {
                     rootView.requestApplyInsets()
+                    rootView.rootWindowInsets?.let(::updateCameraStatusLayout)
                     applyResponsiveLayout(false)
                 }
             }
         }
     }
 
-    /** Compact network information inhabits only horizontal regions not blocked by cutouts. */
     private fun refreshCameraStatus() {
-        if (!::cameraNetworkChip.isInitialized) return
+        if (!::topStatusPanel.isInitialized) return
         val cell = servingCell
         val radio = radioSignal?.takeIf {
             SystemClock.elapsedRealtime() - it.measuredAt in 0..60000L
         }
-        val network = cell?.network ?: radio?.network
-        val label = when (network?.uppercase(Locale.ROOT)) {
-            "LTE" -> "4G LTE"
-            "NR" -> "5G NR"
-            "UMTS", "WCDMA" -> "3G"
-            "GSM" -> "2G"
-            else -> network?.takeIf { it.isNotBlank() } ?: "Сеть"
-        }
-        val dbm = cell?.dbm ?: radio?.dbm
-        val networkText = label + (dbm?.let { " · ${it} dBm" } ?: "")
-        cameraNetworkChip.text = if (compactCameraStatus)
-            networkText + " · вышек ${sites.size}" else networkText
-        cameraTowersChip.text = "Вышек: ${sites.size}"
+        topStatusPanel.updateNetwork(
+            cell?.operator ?: radio?.operator,
+            cell?.network ?: radio?.network,
+            cell?.dbm ?: radio?.dbm,
+            cell?.rsrp ?: radio?.rsrp,
+            cell?.rsrq ?: radio?.rsrq,
+            cell?.sinr ?: radio?.sinr
+        )
+        topStatusPanel.updateTowers(visible.size, sites.size)
     }
 
+    /** Use the actual per-device cutout geometry; do not assume a central camera. */
     private fun updateCameraStatusLayout(insets: WindowInsets) {
-        if (!::cameraStatusBand.isInitialized ||
-            displayMode != DisplayModePolicy.FULLSCREEN) return
-        // When the user swipes down a transient system bar, don't paint over its icons.
-        if (Build.VERSION.SDK_INT >= 30 &&
-            insets.isVisible(WindowInsets.Type.statusBars())) {
-            cameraStatusBand.visibility = View.INVISIBLE
-            return
-        }
-        cameraStatusBand.visibility = View.VISIBLE
-        val w = rootView.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-        val cutouts = if (Build.VERSION.SDK_INT >= 28)
+        if (!::topStatusPanel.isInitialized) return
+        val immersive = displayMode == DisplayModePolicy.FULLSCREEN
+        val cutouts = if (Build.VERSION.SDK_INT >= 28 && immersive)
             insets.displayCutout?.boundingRects.orEmpty()
-                .filter { it.top < dp(36) && it.bottom > 0 }
-                .map { it.left..it.right }
+                .filter { it.top < dp(52) && it.bottom > 0 }
         else emptyList()
-        val segments = DisplayModePolicy.topSegments(w, cutouts, dp(8))
-            .filter { it.width >= dp(100) }
-        val left = segments.firstOrNull() ?: run {
-            cameraNetworkChip.visibility = View.GONE
-            cameraTowersChip.visibility = View.GONE
-            return
-        }
-        val separate = segments.size > 1
-        compactCameraStatus = !separate
-        cameraNetworkChip.visibility = View.VISIBLE
-        cameraTowersChip.visibility = if (separate) View.VISIBLE else View.GONE
-        val networkWidth = minOf(left.width, dp(if (separate) 155 else 230))
-        cameraNetworkChip.layoutParams = FrameLayout.LayoutParams(
-            networkWidth, dp(28), Gravity.TOP or Gravity.START
-        ).apply { leftMargin = left.start; topMargin = dp(4) }
-        if (separate) {
-            val right = segments.last()
-            val towerWidth = minOf(right.width, dp(120))
-            cameraTowersChip.layoutParams = FrameLayout.LayoutParams(
-                towerWidth, dp(28), Gravity.TOP or Gravity.START
-            ).apply { leftMargin = right.endExclusive - towerWidth; topMargin = dp(4) }
-        }
-        refreshCameraStatus()
+        val ranges = cutouts.map { it.left..it.right }
+        val bottom = cutouts.maxOfOrNull { it.bottom } ?: 0
+        val width = rootView.width.takeIf { it > 0 } ?:
+            resources.displayMetrics.widthPixels
+        val height = topStatusPanel.arrange(width, ranges, bottom, immersive,
+            systemLeftInset, systemRightInset)
+        topPanelHeight = height
+        val topInset = if (immersive) 0 else systemTopInset
+        topStatusPanel.layoutParams =
+            (topStatusPanel.layoutParams as FrameLayout.LayoutParams).apply {
+                gravity = Gravity.TOP
+                width = ViewGroup.LayoutParams.MATCH_PARENT
+                this.height = height
+                leftMargin = 0; rightMargin = 0
+                topMargin = topInset
+            }
+        statusBarProtection.layoutParams =
+            (statusBarProtection.layoutParams as FrameLayout.LayoutParams).apply {
+                width = ViewGroup.LayoutParams.MATCH_PARENT
+                this.height = systemTopInset
+                topMargin = 0
+            }
+        statusBarProtection.visibility = if (immersive) View.GONE else View.VISIBLE
+        topStatusPanel.visibility = if (immersive && Build.VERSION.SDK_INT >= 30 &&
+            insets.isVisible(WindowInsets.Type.statusBars()))
+            View.INVISIBLE else View.VISIBLE
+        applyResponsiveLayout(false)
     }
 
     /** The same MapView survives rotation: only existing overlays change bounds. */
@@ -2517,13 +2523,13 @@ class MainActivity : Activity(), SensorEventListener {
         val targetWidth = if (isWide) landscapePanelWidth() else ViewGroup.LayoutParams.MATCH_PARENT
         val targetHeight = when {
             isWide && sheetExpanded -> landscapeSheetHeight()
-            isWide -> dp(84)
+            isWide -> dp(50)
             sheetExpanded -> {
                 val total = rootView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
                 (total * .73f).toInt().coerceAtMost(total - systemTopInset - dp(48))
                     .coerceAtLeast(dp(170))
             }
-            else -> dp(84)
+            else -> dp(50)
         }
         sheetView.layoutParams = (sheetView.layoutParams as FrameLayout.LayoutParams).apply {
             width = targetWidth
@@ -2536,40 +2542,50 @@ class MainActivity : Activity(), SensorEventListener {
         }
         sheetHandle.text = when {
             isWide && sheetExpanded -> "›  Свернуть"
-            isWide -> "‹  Подробности"
+            isWide -> "‹  Подробнее"
             sheetExpanded -> "⌄  Свернуть"
-            else -> "⌃  Подробности"
+            else -> "⌃  Подробнее"
         }
+        compactHandleRow.layoutParams = (compactHandleRow.layoutParams
+            as LinearLayout.LayoutParams).apply { height = dp(if (sheetExpanded) 40 else 50) }
+        compactSignalBars.visibility = if (sheetExpanded) View.GONE else View.VISIBLE
+        expandedSignalRow.visibility = if (sheetExpanded) View.VISIBLE else View.GONE
+        signalDetails.visibility = if (sheetExpanded) View.VISIBLE else View.GONE
         sheetExtra.visibility = if (sheetExpanded) View.VISIBLE else View.GONE
         sheetView.visibility = if (mapFullscreen || isChoosingCrosshair) View.GONE else View.VISIBLE
 
         topHeader.layoutParams = (topHeader.layoutParams as FrameLayout.LayoutParams).apply {
-            width = if (sideWidth > 0) {
-                (rootView.width - sideWidth - systemLeftInset - systemRightInset - dp(30))
-                    .coerceAtLeast(dp(200))
-            } else ViewGroup.LayoutParams.MATCH_PARENT
-            gravity = Gravity.TOP or Gravity.START
-            topMargin = systemTopInset + dp(if (isWide) 5 else 10)
-            leftMargin = systemLeftInset + dp(if (isWide) 8 else 12)
-            rightMargin = systemRightInset + dp(12)
+            width = ViewGroup.LayoutParams.WRAP_CONTENT
+            height = dp(44)
+            gravity = Gravity.TOP or Gravity.END
+            topMargin = (if (displayMode == DisplayModePolicy.FULLSCREEN)
+                0 else systemTopInset) + (topPanelHeight.takeIf { it > 0 } ?: dp(61)) +
+                dp(if (isWide) 6 else 8)
+            leftMargin = systemLeftInset
+            rightMargin = systemRightInset + dp(10) + sideWidth
         }
         floatingRail.visibility = if (mapFullscreen || isChoosingCrosshair ||
             (sheetExpanded && !isWide)) View.GONE else View.VISIBLE
+        // A consistent baseline keeps all three buttons directly above the
+        // collapsed sheet. The compass sits immediately above the whole rail.
+        val sheetIsVisible = !mapFullscreen && !isChoosingCrosshair
+        val railBottom = systemBottomInset +
+            if (!sheetIsVisible || (isWide && sheetExpanded)) dp(8)
+            else targetHeight + dp(8)
         floatingRail.layoutParams = (floatingRail.layoutParams as FrameLayout.LayoutParams).apply {
             gravity = Gravity.END or Gravity.BOTTOM
             rightMargin = systemRightInset + sideWidth + dp(12)
-            bottomMargin = systemBottomInset + dp(if (isWide) {
-                if (sheetExpanded) 6 else 94
-            } else 112)
+            bottomMargin = railBottom
         }
         northIndicator.visibility = if (sheetExpanded && !isWide &&
             !mapFullscreen) View.GONE else View.VISIBLE
         northIndicator.layoutParams =
             (northIndicator.layoutParams as FrameLayout.LayoutParams).apply {
-                gravity = if (isWide) Gravity.END or Gravity.TOP else Gravity.END or Gravity.BOTTOM
-                rightMargin = systemRightInset + sideWidth + dp(if (isWide) 13 else 10)
-                topMargin = if (isWide) systemTopInset + dp(50) else 0
-                bottomMargin = if (isWide) 0 else systemBottomInset + dp(294)
+                gravity = Gravity.END or Gravity.BOTTOM
+                rightMargin = systemRightInset + sideWidth + dp(12)
+                topMargin = 0
+                // Each rail button is 49dp high with 8dp separation.
+                bottomMargin = railBottom + dp(3 * (49 + 8) + 5)
             }
         crosshairControls.layoutParams =
             (crosshairControls.layoutParams as FrameLayout.LayoutParams).apply {
@@ -2756,6 +2772,9 @@ class MainActivity : Activity(), SensorEventListener {
         sheetExpanded = expanded
         sheetHandle.contentDescription = if (expanded) "Свернуть панель" else "Развернуть панель"
         sheetExtra.visibility = if (expanded) View.VISIBLE else View.GONE
+        expandedSignalRow.visibility = if (expanded) View.VISIBLE else View.GONE
+        signalDetails.visibility = if (expanded) View.VISIBLE else View.GONE
+        compactSignalBars.visibility = if (expanded) View.GONE else View.VISIBLE
         if (expanded) details.visibility = View.GONE
         if (landscape) {
             // Landscape uses a right-hand rail, never a 73%-tall bottom overlay.
@@ -2782,7 +2801,7 @@ class MainActivity : Activity(), SensorEventListener {
             val maxHeight = (usable - dp(85)).coerceAtLeast(dp(170))
             val target = if (expanded) ((usable * 0.73f).toInt()).coerceIn(
                 dp(170).coerceAtMost(maxHeight), maxHeight
-            ) else dp(84)
+            ) else dp(50)
             val old = sheetView.layoutParams.height
             applyResponsiveLayout(false) // update buttons, bounds and active theme first
             sheetView.layoutParams = (sheetView.layoutParams as FrameLayout.LayoutParams).apply {
@@ -2917,14 +2936,16 @@ class MainActivity : Activity(), SensorEventListener {
             fix.accuracy > old.accuracy * 2f &&
             (fix.elapsedRealtimeNanos - old.elapsedRealtimeNanos) < 9000000000L) return
         location = fix
-        gpsLabel.text = if (fix.hasAccuracy()) {
-            val accuracy = fix.accuracy.toInt()
-            "GPS / Wi-Fi: ±" + accuracy + " м · " + fix.provider +
-                if (accuracy > 70) " · низкая точность" else " · уточняется"
-        } else "GPS / Wi-Fi: точность не сообщена · " + fix.provider
-        gpsLabel.setTextColor(
-            if (fix.hasAccuracy() && fix.accuracy > 70f) Color.rgb(188, 98, 42) else palette.secondary
-        )
+        gpsLabel.text = if (fix.hasAccuracy())
+            "GPS ±" + fix.accuracy.toInt() + " м"
+        else "GPS: точность —"
+        gpsLabel.contentDescription = if (fix.hasAccuracy())
+            "Геопозиция " + fix.provider + ", точность ±" +
+                fix.accuracy.toInt() + " метров"
+        else "GPS / Wi-Fi: точность не сообщена, источник " + fix.provider
+        // Both day and night map styles use a dark header with light text.
+        gpsLabel.setTextColor(if (fix.hasAccuracy() && fix.accuracy > 70f)
+            Color.rgb(255, 181, 117) else Color.rgb(204, 217, 194))
         updateDot()
         if (manualCenter) return
         val point = LatLng(fix.latitude, fix.longitude)
@@ -3251,16 +3272,17 @@ class MainActivity : Activity(), SensorEventListener {
             3 -> Color.rgb(180, 169, 70)
             else -> palette.olive
         }
-        for (i in 0 until signalBars.childCount) {
-            signalBars.getChildAt(i).background =
-                rounded(if (i < count) color else palette.signalMuted, 3)
+        for (barGroup in listOf(signalBars, compactSignalBars)) {
+            for (i in 0 until barGroup.childCount) {
+                barGroup.getChildAt(i).background =
+                    rounded(if (i < count) color else palette.signalMuted, 3)
+            }
         }
     }
 
     private fun emptyFeatures(): FeatureCollection = FeatureCollection.fromFeatures(emptyArray<Feature>())
 
     private fun showPins() {
-        refreshCameraStatus()
         visible = sites.filter {
             (selectedOperator == null || (selectedOperator == unknown && it.operator == null) ||
                 it.operator == selectedOperator) &&
@@ -3275,6 +3297,7 @@ class MainActivity : Activity(), SensorEventListener {
             }) &&
             (sourceFilter == null || it.source.contains(sourceFilter!!, true))
         }
+        refreshCameraStatus()
         if (!styled) return
         val features = visible.map { site ->
             Feature.fromGeometry(Point.fromLngLat(site.longitude, site.latitude)).apply {

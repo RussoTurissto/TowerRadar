@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Preserve exact approved artwork; let the launcher apply one adaptive mask. -->
-    <background android:drawable="@drawable/ic_tower_approved"/>
-    <foreground android:drawable="@android:color/transparent"/>
+    <!-- Keep exact approved bat/radar artwork wholly within the 66dp safe zone
+         of a 108dp adaptive icon; one mask only, irrespective of launcher shape. -->
+    <background android:drawable="@android:color/white"/>
+    <foreground android:drawable="@drawable/ic_tower_approved_inset"/>
+    <monochrome android:drawable="@drawable/ic_tower_monochrome"/>
 </adaptive-icon>
