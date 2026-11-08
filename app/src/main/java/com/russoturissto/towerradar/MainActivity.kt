@@ -418,10 +418,9 @@ class MainActivity : Activity(), SensorEventListener {
                     if (selected != providerIndex) applyBasemap(MapSources.providers[selected])
                     mapStatus.text = "Подложка: " + MapSources.providers[selected].attribution
                 } else {
-                    // No network: retain a valid OSM map style so previously
-                    // viewed areas can still render from the ambient cache.
-                    if (providerIndex != 0) applyBasemap(MapSources.providers[0])
-                    mapStatus.text = "Нет сети · показываем сохранённые участки OSM, если доступны"
+                    // No network: keep the previous source and any valid cached tiles.
+                    // Do NOT reset a remembered OSM provider or erase its selection.
+                    mapStatus.text = "Нет сети · сохранили предыдущую подложку и кеш"
                 }
             }
         }
@@ -791,7 +790,8 @@ class MainActivity : Activity(), SensorEventListener {
                 "При первом запуске этой версии старый кеш будет очищен для исправления " +
                 "качества Яндекса. \n\n" +
                 "Это не предварительное скачивание районов: вне сети карта отображает " +
-                "только ещё действительные сохранённые тайлы."
+                "только ещё действительные сохранённые тайлы.\\n\\n" +
+                mapTileCache.detailedDiagnostics(MapSources.providers.getOrNull(providerIndex))
             )
             .setItems(arrayOf(
                 "Лимит: 100 МБ",
@@ -1543,8 +1543,12 @@ class MainActivity : Activity(), SensorEventListener {
         mapTileCache = MapTileCache(this)
         mapTileCache.initialize()
         HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
-            chain.proceed(chain.request().newBuilder()
-                .header("User-Agent", "TowerRadar/0.4.0 (+https://github.com/RussoTurissto/TowerRadar)").build())
+            val request = chain.request()
+            val url = request.url.toString()
+            if (url.contains("tile") || url.contains("tiles.api-maps.yandex.ru") ||
+                url.contains("maps.2gis.com")) mapTileCache.recordTileNetworkRequest()
+            chain.proceed(request.newBuilder()
+                .header("User-Agent", "TowerRadar/0.13.0 (+https://github.com/RussoTurissto/TowerRadar)").build())
         }.build())
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         headingSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
@@ -1935,6 +1939,12 @@ class MainActivity : Activity(), SensorEventListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?,
                                         position: Int, id: Long) {
                 if (map == null) return
+                val selectedId = if (position == 0) "auto"
+                    else MapSources.providers[position - 1].id
+                // Android Spinner calls onItemSelected automatically after restore.
+                // Ignore it when it is just restoring the persisted choice.
+                if (getPreferences(Context.MODE_PRIVATE)
+                        .getString("map_provider", "auto") == selectedId) return
                 if (position == 0) {
                     getPreferences(Context.MODE_PRIVATE).edit()
                         .putString("map_provider", "auto").apply()
