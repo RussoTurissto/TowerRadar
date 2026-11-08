@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- No embedded white square: the launcher supplies the final shape.
-         Foreground extents are inside the Android 66/108dp safe zone. -->
+    <!-- Original approved bat silhouette, recovered as a transparent foreground.
+         Every element fits within the 66/108dp adaptive safe region. -->
     <background android:drawable="@drawable/ic_tower_icon_background"/>
-    <foreground android:drawable="@drawable/ic_tower_foreground"/>
+    <foreground android:drawable="@drawable/ic_tower_restored"/>
     <monochrome android:drawable="@drawable/ic_tower_monochrome"/>
 </adaptive-icon>

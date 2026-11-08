@@ -4,6 +4,10 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.animation.ValueAnimator
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.view.ViewTreeObserver
+import android.view.animation.LinearInterpolator
 import android.content.ClipboardManager
 import android.view.MotionEvent
 import android.view.WindowInsets
@@ -143,6 +147,10 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var fullScreenButton: Button
     private var sheetExpanded = false
     private var mapFullscreen = false
+    private var compassBounceAnimator: ValueAnimator? = null
+    private var compassBounceGeneration = 0
+    private var servingPulseAnimator: ValueAnimator? = null
+    private var servingPulseFrameAt = 0L
 
     // Independent of the map-only ⛶ button: system chrome and camera-safe top information.
     private var displayMode = DisplayModePolicy.STANDARD
@@ -289,6 +297,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         googleMapSession = if (provider.id.startsWith("google-")) session else null
         lastGoogleAttributionAt = 0L
+        stopServingPulse()
         styled = false
         providerIndex = MapSources.providers.indexOf(provider).coerceAtLeast(0)
         getPreferences(Context.MODE_PRIVATE).edit()
@@ -383,6 +392,17 @@ class MainActivity : Activity(), SensorEventListener {
                     PropertyFactory.lineWidth(3.3f),
                     PropertyFactory.lineDasharray(arrayOf(2.4f, 2.0f)))
             })
+            // A restrained, slowly expanding ring only around an identified
+            // serving radio cell; estimated cell positions are never real masts.
+            style.addLayer(CircleLayer("serving-cell-pulse", "serving-cell").apply {
+                setProperties(
+                    PropertyFactory.circleColor(Color.TRANSPARENT),
+                    PropertyFactory.circleRadius(11f),
+                    PropertyFactory.circleStrokeColor(Color.rgb(47, 191, 166)),
+                    PropertyFactory.circleStrokeWidth(2.0f),
+                    PropertyFactory.circleStrokeOpacity(0f)
+                )
+            })
             style.addLayer(CircleLayer("serving-cell-dot", "serving-cell").apply {
                 setProperties(PropertyFactory.circleColor(Color.rgb(215, 141, 45)),
                     PropertyFactory.circleRadius(10f), PropertyFactory.circleStrokeColor(Color.WHITE),
@@ -450,6 +470,7 @@ class MainActivity : Activity(), SensorEventListener {
             showPins()
             updateOverlays()
             updateAimColors()
+            updateServingPulse()
             if (!initiallyCentered) center?.let(::moveCamera)
             if (provider.id.startsWith("google-")) requestGoogleAttribution(force = true)
         }
@@ -2034,7 +2055,8 @@ class MainActivity : Activity(), SensorEventListener {
         compactSignalBars = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
-            setPadding(dp(4), 0, dp(4), 0)
+            // Keep the 48dp touch target, but raise the five bars within it.
+            setPadding(dp(4), 0, dp(4), dp(10))
             contentDescription = "Уровень сигнала. Нажмите для диагностики"
             isClickable = true
             setOnClickListener { showSignalDetails() }
@@ -2254,10 +2276,23 @@ class MainActivity : Activity(), SensorEventListener {
         }
         details.addView(detailBody)
 
-        mapAttribution = text("© OpenStreetMap contributors", 10f, palette.text).apply {
-            setPadding(dp(6), dp(3), dp(6), dp(3))
-            maxWidth = dp(310)
-            background = rounded(palette.surface, 3)
+        // The actual copyright must remain visible, but should not look
+        // like another large map control. A subtle outline keeps it legible.
+        mapAttribution = text("© OpenStreetMap contributors", 10f,
+            if (palette.dark) Color.WHITE else Color.rgb(34, 48, 31)).apply {
+            setPadding(dp(3), dp(2), dp(3), dp(2))
+            maxWidth = dp(315)
+            maxLines = 4
+            background = null
+            setShadowLayer(dp(1).toFloat(), 0f, dp(1).toFloat(),
+                if (palette.dark) Color.BLACK else Color.WHITE)
+        }
+        mapAttribution.addOnLayoutChangeListener { _, _, top, _, bottom,
+                                                    _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop &&
+                ::progressStrip.isInitialized && ::rootView.isInitialized) {
+                progressStrip.post { if (!isDestroyed) applyResponsiveLayout(false) }
+            }
         }
         rootView.addView(mapAttribution, FrameLayout.LayoutParams(-2, -2,
             Gravity.START or Gravity.BOTTOM).apply {
@@ -2584,8 +2619,11 @@ class MainActivity : Activity(), SensorEventListener {
                 gravity = Gravity.END or Gravity.BOTTOM
                 rightMargin = systemRightInset + sideWidth + dp(12)
                 topMargin = 0
-                // Each rail button is 49dp high with 8dp separation.
-                bottomMargin = railBottom + dp(3 * (49 + 8) + 5)
+                // Map-only fullscreen hides the rail but keeps the compass.
+                // Its resting place is immediately over the former 50dp panel.
+                bottomMargin = if (mapFullscreen)
+                    systemBottomInset + dp(59)
+                else railBottom + dp(3 * (49 + 8) + 5)
             }
         crosshairControls.layoutParams =
             (crosshairControls.layoutParams as FrameLayout.LayoutParams).apply {
@@ -2607,16 +2645,32 @@ class MainActivity : Activity(), SensorEventListener {
                 bottomMargin = if (isWide) 0 else targetHeight + systemBottomInset + dp(12)
             }
         }
+        // Provider credits remain visible and clickable, in a dedicated line
+        // immediately above the footer. The progress strip sits ABOVE credits,
+        // never over them, regardless of real text height / provider / font scale.
+        val creditMargin = systemBottomInset +
+            if (isWide || mapFullscreen || isChoosingCrosshair) dp(8)
+            else targetHeight + dp(7)
+        if (::mapAttribution.isInitialized) {
+            mapAttribution.layoutParams =
+                (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
+                    gravity = Gravity.START or Gravity.BOTTOM
+                    leftMargin = systemLeftInset + dp(8)
+                    rightMargin = systemRightInset + dp(8) + sideWidth
+                    bottomMargin = creditMargin
+                }
+        }
         if (::progressStrip.isInitialized) {
             val railVisible = floatingRail.visibility == View.VISIBLE
+            val compassInFooter = mapFullscreen && northIndicator.visibility == View.VISIBLE
             val available = (rootView.width.takeIf { it > 0 }
                 ?: resources.displayMetrics.widthPixels) -
                 systemLeftInset - systemRightInset - sideWidth - dp(24)
-            // Reserve the full right action rail plus breathing room.
-            // On a very narrow split-screen, move the strip above the rail
-            // instead of letting it obscure buttons or become unreadable.
-            val reserve = if (railVisible) dp(77) else 0
-            val lift = railVisible && available - reserve < dp(168)
+            val reserve = if (railVisible || compassInFooter) dp(77) else 0
+            val lift = (railVisible || compassInFooter) &&
+                available - reserve < dp(168)
+            val creditHeight = mapAttribution.height.takeIf { it > 0 } ?: dp(20)
+            val minProgressBottom = creditMargin + creditHeight + dp(9)
             progressStrip.layoutParams =
                 (progressStrip.layoutParams as FrameLayout.LayoutParams).apply {
                     gravity = Gravity.BOTTOM
@@ -2624,20 +2678,9 @@ class MainActivity : Activity(), SensorEventListener {
                     rightMargin = systemRightInset + sideWidth + dp(12) +
                         if (lift) 0 else reserve
                     bottomMargin = if (lift)
-                        railBottom + dp(3 * (49 + 8) + 63)
-                    else systemBottomInset +
-                        if (isWide || mapFullscreen || isChoosingCrosshair) dp(12)
-                        else targetHeight + dp(12)
+                        maxOf(minProgressBottom, railBottom + dp(3 * (49 + 8) + 63))
+                    else minProgressBottom
                 }
-        }
-        if (::mapAttribution.isInitialized) {
-            mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
-                gravity = Gravity.START or Gravity.BOTTOM
-                leftMargin = systemLeftInset + dp(8)
-                bottomMargin = if (isWide || mapFullscreen || isChoosingCrosshair)
-                    systemBottomInset + dp(8)
-                else systemBottomInset + targetHeight + dp(7)
-            }
         }
         if (::details.isInitialized) {
             details.layoutParams = (details.layoutParams as FrameLayout.LayoutParams).apply {
@@ -2662,6 +2705,10 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
+        ++compassBounceGeneration
+        compassBounceAnimator?.cancel()
+        compassBounceAnimator = null
+        if (::northIndicator.isInitialized) northIndicator.translationY = 0f
         super.onConfigurationChanged(newConfig)
         // Handle rotation in place: MapView, style, network streams and camera survive.
         sheetAnimator?.cancel()
@@ -2763,7 +2810,23 @@ class MainActivity : Activity(), SensorEventListener {
         return super.dispatchTouchEvent(event)
     }
 
+    /**
+     * Entering map-only fullscreen: the compass drops vertically at its existing
+     * right-hand X coordinate, lands over the 50dp footer and rebounds three times.
+     * Exiting: never animate upwards; restore the normal anchored position instantly.
+     */
     private fun setMapFullscreen(full: Boolean) {
+        if (mapFullscreen == full) return
+        compassBounceAnimator?.cancel()
+        compassBounceAnimator = null
+        northIndicator.translationY = 0f
+        northIndicator.scaleX = 1f
+        northIndicator.scaleY = 1f
+        val beforeY = if (full && northIndicator.isShown &&
+            northIndicator.height > 0) IntArray(2).also {
+            northIndicator.getLocationOnScreen(it)
+        }[1] else null
+        val ticket = ++compassBounceGeneration
         if (full) hideDirectionPanel()
         mapFullscreen = full
         sheetView.visibility = if (full) View.GONE else View.VISIBLE
@@ -2774,6 +2837,46 @@ class MainActivity : Activity(), SensorEventListener {
         fullScreenButton.contentDescription = if (full) "Вернуть панель" else "На весь экран"
         applyResponsiveLayout(false)
         if (full) details.visibility = View.GONE
+        if (full && beforeY != null && ValueAnimator.areAnimatorsEnabled()) {
+            // Wait for the new bottom margin to be applied to the same compass view.
+            val observer = northIndicator.viewTreeObserver
+            observer.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+                override fun onPreDraw(): Boolean {
+                    if (observer.isAlive) observer.removeOnPreDrawListener(this)
+                    if (ticket != compassBounceGeneration || !mapFullscreen ||
+                        isDestroyed || isFinishing) return true
+                    val after = IntArray(2)
+                    northIndicator.getLocationOnScreen(after)
+                    val startY = (beforeY - after[1]).toFloat()
+                    if (startY >= -dp(12).toFloat()) return true
+                    northIndicator.translationY = startY
+                    val bounce = ValueAnimator.ofFloat(0f, 1f).apply {
+                        duration = CompassBouncePolicy.DURATION_MS
+                        interpolator = LinearInterpolator()
+                        addUpdateListener { running ->
+                            if (ticket == compassBounceGeneration && mapFullscreen) {
+                                northIndicator.translationY = CompassBouncePolicy.offset(
+                                    running.animatedValue as Float,
+                                    startY, resources.displayMetrics.density
+                                )
+                            }
+                        }
+                        addListener(object : AnimatorListenerAdapter() {
+                            override fun onAnimationEnd(animation: Animator) {
+                                if (ticket == compassBounceGeneration) {
+                                    northIndicator.translationY = 0f
+                                    compassBounceAnimator = null
+                                }
+                            }
+                        })
+                    }
+                    compassBounceAnimator = bounce
+                    bounce.start()
+                    return true
+                }
+            })
+            northIndicator.invalidate()
+        }
     }
 
     private fun expandSheet(expanded: Boolean) {
@@ -2859,6 +2962,15 @@ class MainActivity : Activity(), SensorEventListener {
             mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
                 bottomMargin = footerMargin
             }
+        }
+        if (::progressStrip.isInitialized && progressStrip.visibility == View.VISIBLE &&
+            ::mapAttribution.isInitialized) {
+            val minBottom = footerMargin +
+                (mapAttribution.height.takeIf { it > 0 } ?: dp(20)) + dp(9)
+            progressStrip.layoutParams =
+                (progressStrip.layoutParams as FrameLayout.LayoutParams).apply {
+                    bottomMargin = maxOf(bottomMargin, minBottom)
+                }
         }
         if (::details.isInitialized) {
             details.layoutParams = (details.layoutParams as FrameLayout.LayoutParams).apply {
@@ -3321,6 +3433,48 @@ class MainActivity : Activity(), SensorEventListener {
             ?.setGeoJson(FeatureCollection.fromFeatures(features.toTypedArray()))
     }
 
+    /**
+     * A single low-frequency visual pulse at the serving cell estimate.
+     * No pulse on arbitrary nearby OSM towers or when the cell is unknown.
+     * Stops on pause, no signal-bar animation and no background work.
+     */
+    private fun updateServingPulse() {
+        if (!aimForeground || servingSite == null || !styled ||
+            !ValueAnimator.areAnimatorsEnabled() ||
+            map?.style?.getLayer("serving-cell-pulse") !is CircleLayer) {
+            stopServingPulse()
+            return
+        }
+        if (servingPulseAnimator?.isRunning == true) return
+        servingPulseFrameAt = 0L
+        servingPulseAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 2200L
+            repeatCount = ValueAnimator.INFINITE
+            interpolator = LinearInterpolator()
+            addUpdateListener { tick ->
+                if (!aimForeground || !styled || servingSite == null) return@addUpdateListener
+                val now = SystemClock.uptimeMillis()
+                if (now - servingPulseFrameAt < 60L) return@addUpdateListener
+                servingPulseFrameAt = now
+                val t = tick.animatedValue as Float
+                (map?.style?.getLayer("serving-cell-pulse") as? CircleLayer)
+                    ?.setProperties(
+                        PropertyFactory.circleRadius(11f + t * 16f),
+                        PropertyFactory.circleStrokeOpacity((1f - t) * 0.34f),
+                        PropertyFactory.circleStrokeWidth(2.0f - t * .5f)
+                    )
+            }
+            start()
+        }
+    }
+
+    private fun stopServingPulse() {
+        servingPulseAnimator?.cancel()
+        servingPulseAnimator = null
+        (map?.style?.getLayer("serving-cell-pulse") as? CircleLayer)
+            ?.setProperties(PropertyFactory.circleStrokeOpacity(0f))
+    }
+
     private fun updateDot() {
         if (!styled) return
         val point = activeUserPoint()
@@ -3426,6 +3580,7 @@ class MainActivity : Activity(), SensorEventListener {
             arrayOf(Feature.fromGeometry(Point.fromLngLat(site.longitude, site.latitude)))
         )
         (map?.style?.getSource("serving-cell") as? GeoJsonSource)?.setGeoJson(cell)
+        updateServingPulse()
     }
 
     /**
@@ -3616,6 +3771,7 @@ class MainActivity : Activity(), SensorEventListener {
         mapView.onResume()
         applyDisplayMode()
         updateSelectedAimLine()
+        updateServingPulse()
         val prefs = getPreferences(Context.MODE_PRIVATE)
         if (prefs.getBoolean("yandex_return_hint", false)) {
             prefs.edit().remove("yandex_return_hint").apply()
@@ -3645,6 +3801,11 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
     override fun onPause() {
+        ++compassBounceGeneration
+        compassBounceAnimator?.cancel()
+        compassBounceAnimator = null
+        if (::northIndicator.isInitialized) northIndicator.translationY = 0f
+        stopServingPulse()
         aimForeground = false
         persistLastCamera(force = true)
         sensorManager.unregisterListener(this)
@@ -3671,6 +3832,9 @@ class MainActivity : Activity(), SensorEventListener {
         mapView.onSaveInstanceState(outState)
     }
     override fun onDestroy() {
+        ++compassBounceGeneration
+        compassBounceAnimator?.cancel()
+        stopServingPulse()
         executor.shutdownNow()
         apiExecutor.shutdownNow()
         cellExecutor.shutdownNow()
