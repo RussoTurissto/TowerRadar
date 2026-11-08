@@ -935,6 +935,7 @@ class MainActivity : Activity(), SensorEventListener {
         finish.addView(styledButton("Готово", 12f, true).apply {
             setOnClickListener { hideDirectionPanel() }
         }, LinearLayout.LayoutParams(dp(88), dp(34)))
+        applyResponsiveLayout(false)
     }
 
     private fun hideDirectionPanel() {
@@ -1822,14 +1823,16 @@ class MainActivity : Activity(), SensorEventListener {
         sheetView.addView(sheetHandle, LinearLayout.LayoutParams(-1, dp(20)))
         sheetHandle.setOnClickListener { expandSheet(!sheetExpanded) }
         var touchY = 0f
+        var touchX = 0f
         sheetHandle.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     touchY = event.rawY
+                    touchX = event.rawX
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    val diff = event.rawY - touchY
+                    val diff = if (landscape) event.rawX - touchX else event.rawY - touchY
                     if (diff < -dp(24)) expandSheet(true)
                     else if (diff > dp(24)) expandSheet(false)
                     else sheetHandle.performClick()
@@ -2064,6 +2067,7 @@ class MainActivity : Activity(), SensorEventListener {
         cancelPicker.setOnClickListener { finishCrosshairMode(false) }
         confirmPicker.setOnClickListener { finishCrosshairMode(true) }
         installSafeInsets()
+        rootView.post { applyResponsiveLayout(false) }
 
         radius.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
@@ -2085,35 +2089,176 @@ class MainActivity : Activity(), SensorEventListener {
      */
     private fun installSafeInsets() {
         rootView.setOnApplyWindowInsetsListener { _, insets ->
-            val top = if (Build.VERSION.SDK_INT >= 30) {
+            val top = if (Build.VERSION.SDK_INT >= 30)
                 insets.getInsets(WindowInsets.Type.statusBars() or
                     WindowInsets.Type.displayCutout()).top
-            } else insets.systemWindowInsetTop
-            val bottom = if (Build.VERSION.SDK_INT >= 30) {
+            else insets.systemWindowInsetTop
+            val bottom = if (Build.VERSION.SDK_INT >= 30)
                 insets.getInsets(WindowInsets.Type.navigationBars() or
                     WindowInsets.Type.displayCutout()).bottom
-            } else insets.systemWindowInsetBottom
-            if (systemTopInset != top || systemBottomInset != bottom) {
+            else insets.systemWindowInsetBottom
+            val left = if (Build.VERSION.SDK_INT >= 30)
+                insets.getInsets(WindowInsets.Type.navigationBars() or
+                    WindowInsets.Type.displayCutout()).left else 0
+            val right = if (Build.VERSION.SDK_INT >= 30)
+                insets.getInsets(WindowInsets.Type.navigationBars() or
+                    WindowInsets.Type.displayCutout()).right else 0
+            if (systemTopInset != top || systemBottomInset != bottom ||
+                systemLeftInset != left || systemRightInset != right) {
                 systemTopInset = top
                 systemBottomInset = bottom
-                topHeader.layoutParams = (topHeader.layoutParams as FrameLayout.LayoutParams)
-                    .apply { topMargin = dp(10) + top }
-                sheetView.layoutParams = (sheetView.layoutParams as FrameLayout.LayoutParams)
-                    .apply { bottomMargin = bottom }
-                floatingRail.layoutParams = (floatingRail.layoutParams as FrameLayout.LayoutParams)
-                    .apply { bottomMargin = bottom + dp(112) }
-                northIndicator.layoutParams = (northIndicator.layoutParams as FrameLayout.LayoutParams)
-                    .apply { bottomMargin = bottom + dp(294) }
-                crosshairControls.layoutParams =
-                    (crosshairControls.layoutParams as FrameLayout.LayoutParams).apply {
-                        bottomMargin = bottom + dp(16)
-                    }
-                updateMapChrome(if (mapFullscreen || isChoosingCrosshair)
-                    0 else sheetView.layoutParams.height)
+                systemLeftInset = left
+                systemRightInset = right
+                applyResponsiveLayout(false)
             }
             insets
         }
         rootView.post { rootView.requestApplyInsets() }
+    }
+
+    /** The same MapView survives rotation: only existing overlays change bounds. */
+    private fun landscapePanelWidth(expanded: Boolean = sheetExpanded): Int {
+        val full = rootView.width.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        val wide = (full * 0.29f).toInt().coerceAtLeast(dp(190))
+            .coerceAtMost(dp(320))
+            .coerceAtMost((full * 0.37f).toInt())
+        return if (expanded) wide else (wide * 0.81f).toInt().coerceAtLeast(dp(165))
+    }
+
+    private fun landscapeSheetHeight(): Int {
+        val total = rootView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        return (total - systemTopInset - systemBottomInset - dp(69))
+            .coerceAtLeast(dp(150))
+    }
+
+    private fun applyResponsiveLayout(animate: Boolean) {
+        if (!::sheetView.isInitialized || !::rootView.isInitialized) return
+        sheetAnimator?.cancel()
+        sheetAnimator = null
+        val isWide = landscape
+        val sideWidth = if (isWide && sheetExpanded && !mapFullscreen && !isChoosingCrosshair)
+            landscapePanelWidth() else 0
+        val targetWidth = if (isWide) landscapePanelWidth() else ViewGroup.LayoutParams.MATCH_PARENT
+        val targetHeight = when {
+            isWide && sheetExpanded -> landscapeSheetHeight()
+            isWide -> dp(84)
+            sheetExpanded -> {
+                val total = rootView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+                (total * .73f).toInt().coerceAtMost(total - systemTopInset - dp(48))
+                    .coerceAtLeast(dp(170))
+            }
+            else -> dp(84)
+        }
+        sheetView.layoutParams = (sheetView.layoutParams as FrameLayout.LayoutParams).apply {
+            width = targetWidth
+            height = targetHeight
+            gravity = if (isWide) Gravity.END or Gravity.BOTTOM else Gravity.BOTTOM
+            leftMargin = if (isWide) 0 else dp(6) + systemLeftInset
+            rightMargin = dp(if (isWide) 7 else 6) + systemRightInset
+            topMargin = 0
+            bottomMargin = systemBottomInset
+        }
+        sheetHandle.text = when {
+            isWide && sheetExpanded -> "›  Свернуть"
+            isWide -> "‹  Подробности"
+            sheetExpanded -> "⌄  Свернуть"
+            else -> "⌃  Подробности"
+        }
+        sheetExtra.visibility = if (sheetExpanded) View.VISIBLE else View.GONE
+        sheetView.visibility = if (mapFullscreen || isChoosingCrosshair) View.GONE else View.VISIBLE
+
+        topHeader.layoutParams = (topHeader.layoutParams as FrameLayout.LayoutParams).apply {
+            width = if (sideWidth > 0) {
+                (rootView.width - sideWidth - systemLeftInset - systemRightInset - dp(30))
+                    .coerceAtLeast(dp(200))
+            } else ViewGroup.LayoutParams.MATCH_PARENT
+            gravity = Gravity.TOP or Gravity.START
+            topMargin = systemTopInset + dp(if (isWide) 5 else 10)
+            leftMargin = systemLeftInset + dp(if (isWide) 8 else 12)
+            rightMargin = systemRightInset + dp(12)
+        }
+        floatingRail.visibility = if (mapFullscreen || isChoosingCrosshair ||
+            (sheetExpanded && !isWide)) View.GONE else View.VISIBLE
+        floatingRail.layoutParams = (floatingRail.layoutParams as FrameLayout.LayoutParams).apply {
+            gravity = Gravity.END or Gravity.BOTTOM
+            rightMargin = systemRightInset + sideWidth + dp(12)
+            bottomMargin = systemBottomInset + dp(if (isWide) {
+                if (sheetExpanded) 6 else 94
+            } else 112)
+        }
+        northIndicator.visibility = if (sheetExpanded && !isWide &&
+            !mapFullscreen) View.GONE else View.VISIBLE
+        northIndicator.layoutParams =
+            (northIndicator.layoutParams as FrameLayout.LayoutParams).apply {
+                gravity = if (isWide) Gravity.END or Gravity.TOP else Gravity.END or Gravity.BOTTOM
+                rightMargin = systemRightInset + sideWidth + dp(if (isWide) 13 else 10)
+                topMargin = if (isWide) systemTopInset + dp(50) else 0
+                bottomMargin = if (isWide) 0 else systemBottomInset + dp(294)
+            }
+        crosshairControls.layoutParams =
+            (crosshairControls.layoutParams as FrameLayout.LayoutParams).apply {
+                width = if (isWide)
+                    landscapePanelWidth(true) else ViewGroup.LayoutParams.MATCH_PARENT
+                gravity = Gravity.END or Gravity.BOTTOM
+                leftMargin = if (isWide) 0 else dp(10) + systemLeftInset
+                rightMargin = dp(10) + systemRightInset
+                bottomMargin = dp(if (isWide) 9 else 16) + systemBottomInset
+            }
+        directionPanel?.let { panel ->
+            panel.layoutParams = (panel.layoutParams as FrameLayout.LayoutParams).apply {
+                width = if (isWide) landscapePanelWidth(true) else
+                    (rootView.width - dp(88)).coerceAtMost(dp(390)).coerceAtLeast(dp(210))
+                gravity = if (isWide) Gravity.END or Gravity.CENTER_VERTICAL else
+                    Gravity.START or Gravity.BOTTOM
+                leftMargin = if (isWide) 0 else systemLeftInset + dp(11)
+                rightMargin = if (isWide) systemRightInset + dp(9) else 0
+                bottomMargin = if (isWide) 0 else targetHeight + systemBottomInset + dp(12)
+            }
+        }
+        if (::mapAttribution.isInitialized) {
+            mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
+                gravity = Gravity.START or Gravity.BOTTOM
+                leftMargin = systemLeftInset + dp(8)
+                bottomMargin = if (isWide || mapFullscreen || isChoosingCrosshair)
+                    systemBottomInset + dp(8)
+                else systemBottomInset + targetHeight + dp(7)
+            }
+        }
+        if (::details.isInitialized) {
+            details.layoutParams = (details.layoutParams as FrameLayout.LayoutParams).apply {
+                width = if (isWide) (rootView.width - sideWidth - dp(30))
+                    .coerceAtMost(dp(395)).coerceAtLeast(dp(195))
+                    else ViewGroup.LayoutParams.MATCH_PARENT
+                leftMargin = systemLeftInset + dp(11)
+                rightMargin = systemRightInset + dp(11)
+                bottomMargin = if (isWide) systemBottomInset + dp(8)
+                    else systemBottomInset + targetHeight + dp(15)
+            }
+        }
+        if (animate) {
+            // MapLibre camera and raster cache are never torn down during rotation.
+            // Animate ONLY the overlays; do not fade or reposition the map itself.
+            for (view in listOf(sheetView, topHeader, floatingRail, northIndicator)) {
+                view.animate().cancel()
+                view.alpha = 0.65f
+                view.animate().alpha(1f).setDuration(180L).start()
+            }
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Handle rotation in place: MapView, style, network streams and camera survive.
+        sheetAnimator?.cancel()
+        applyResponsiveLayout(true)
+        rootView.post {
+            if (!isDestroyed) {
+                rootView.requestApplyInsets()
+                updateCrosshairCoordinates()
+                updateOverlays()
+                map?.let { northIndicator.setMapBearing(it.cameraPosition.bearing) }
+            }
+        }
     }
 
     private fun startCrosshairMode() {
@@ -2129,8 +2274,7 @@ class MainActivity : Activity(), SensorEventListener {
         crosshairReticle.visibility = View.VISIBLE
         crosshairControls.visibility = View.VISIBLE
         updateCrosshairCoordinates()
-        mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams)
-            .apply { bottomMargin = systemBottomInset + dp(171) }
+        applyResponsiveLayout(false)
         Toast.makeText(this, "Перемещайте карту или коснитесь нужной точки",
             Toast.LENGTH_SHORT).show()
     }
@@ -2150,8 +2294,9 @@ class MainActivity : Activity(), SensorEventListener {
         crosshairReticle.visibility = View.GONE
         crosshairControls.visibility = View.GONE
         sheetView.visibility = if (mapFullscreen) View.GONE else View.VISIBLE
-        floatingRail.visibility = if (mapFullscreen || sheetExpanded) View.GONE else View.VISIBLE
-        updateMapChrome(if (mapFullscreen) 0 else sheetView.layoutParams.height)
+        floatingRail.visibility = if (mapFullscreen || (sheetExpanded && !landscape))
+            View.GONE else View.VISIBLE
+        applyResponsiveLayout(false)
         if (confirm && chosen != null) {
             setManualPosition(chosen)
             map?.animateCamera(CameraUpdateFactory.newLatLngZoom(chosen, zoom), 300)
@@ -2205,42 +2350,80 @@ class MainActivity : Activity(), SensorEventListener {
         mapFullscreen = full
         sheetView.visibility = if (full) View.GONE else View.VISIBLE
         floatingRail.visibility =
-            if (full || sheetExpanded || isChoosingCrosshair) View.GONE else View.VISIBLE
+            if (full || isChoosingCrosshair || (sheetExpanded && !landscape))
+                View.GONE else View.VISIBLE
         fullScreenButton.text = if (full) "▣" else "⛶"
         fullScreenButton.contentDescription = if (full) "Вернуть панель" else "На весь экран"
-        updateMapChrome(if (full) 0 else sheetView.layoutParams.height)
+        applyResponsiveLayout(false)
         if (full) details.visibility = View.GONE
     }
 
     private fun expandSheet(expanded: Boolean) {
         if (expanded) hideDirectionPanel()
         if (mapFullscreen) setMapFullscreen(false)
+        sheetAnimator?.cancel()
+        sheetAnimator = null
         sheetExpanded = expanded
-        sheetHandle.text = if (expanded) "⌄  Свернуть" else "⌃  Подробности"
-        sheetHandle.contentDescription = if (expanded)
-            "Свернуть панель" else "Развернуть панель"
+        sheetHandle.contentDescription = if (expanded) "Свернуть панель" else "Развернуть панель"
         sheetExtra.visibility = if (expanded) View.VISIBLE else View.GONE
-        floatingRail.visibility = if (expanded) View.GONE else View.VISIBLE
         if (expanded) details.visibility = View.GONE
-        val usable = rootView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
-        val maxHeight = (usable - dp(85)).coerceAtLeast(dp(230))
-        val target = if (expanded) ((usable * 0.73f).toInt()).coerceIn(
-            dp(230).coerceAtMost(maxHeight), maxHeight
-        ) else dp(84)
-        val startHeight = sheetView.layoutParams.height
-        ValueAnimator.ofInt(startHeight, target).apply {
-            duration = 220L
-            addUpdateListener { animator ->
-                val height = animator.animatedValue as Int
+        if (landscape) {
+            // Landscape uses a right-hand rail, never a 73%-tall bottom overlay.
+            val initial = sheetView.layoutParams as FrameLayout.LayoutParams
+            val oldWidth = initial.width.coerceAtLeast(dp(90))
+            val oldHeight = initial.height.coerceAtLeast(dp(70))
+            applyResponsiveLayout(false)
+            val dest = sheetView.layoutParams as FrameLayout.LayoutParams
+            val targetWidth = dest.width
+            val targetHeight = dest.height
+            val animation = ValueAnimator.ofFloat(0f, 1f)
+            sheetAnimator = animation
+            animation.duration = 190L
+            animation.addUpdateListener { value ->
+                val fraction = value.animatedFraction
                 sheetView.layoutParams = (sheetView.layoutParams as FrameLayout.LayoutParams).apply {
-                    this.height = height
+                    width = (oldWidth + (targetWidth - oldWidth) * fraction).toInt()
+                    height = (oldHeight + (targetHeight - oldHeight) * fraction).toInt()
                 }
+            }
+            animation.start()
+        } else {
+            val usable = rootView.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+            val maxHeight = (usable - dp(85)).coerceAtLeast(dp(170))
+            val target = if (expanded) ((usable * 0.73f).toInt()).coerceIn(
+                dp(170).coerceAtMost(maxHeight), maxHeight
+            ) else dp(84)
+            val old = sheetView.layoutParams.height
+            val animation = ValueAnimator.ofInt(old, target)
+            sheetAnimator = animation
+            animation.duration = 210L
+            animation.addUpdateListener { value ->
+                val height = value.animatedValue as Int
+                sheetView.layoutParams =
+                    (sheetView.layoutParams as FrameLayout.LayoutParams).apply {
+                        this.height = height
+                    }
                 updateMapChrome(height)
             }
-        }.start()
+            animation.start()
+            applyResponsiveLayout(false)
+        }
+        floatingRail.visibility = if (expanded && !landscape) View.GONE else View.VISIBLE
     }
 
     private fun updateMapChrome(sheetHeight: Int) {
+        if (landscape) {
+            // Attribution and pin cards stay on the map, never under the side drawer.
+            if (::mapAttribution.isInitialized) {
+                mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams)
+                    .apply { bottomMargin = systemBottomInset + dp(7) }
+            }
+            if (::details.isInitialized) {
+                details.layoutParams = (details.layoutParams as FrameLayout.LayoutParams)
+                    .apply { bottomMargin = systemBottomInset + dp(8) }
+            }
+            return
+        }
         val footerMargin = sheetHeight + dp(7) + systemBottomInset
         directionPanel?.let { panel ->
             panel.layoutParams = (panel.layoutParams as FrameLayout.LayoutParams).apply {
