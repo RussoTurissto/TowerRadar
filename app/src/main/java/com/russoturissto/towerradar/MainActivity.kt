@@ -1900,7 +1900,7 @@ class MainActivity : Activity(), SensorEventListener {
             FrameLayout.LayoutParams(-1, dp(25), Gravity.TOP))
         topStatusPanel = TowerStatusHeader(this)
         rootView.addView(topStatusPanel,
-            FrameLayout.LayoutParams(-1, dp(61), Gravity.TOP))
+            FrameLayout.LayoutParams(-1, dp(50), Gravity.TOP))
         headingView = topStatusPanel.headingLabel
         gpsLabel = topStatusPanel.gpsLabel
         topStatusPanel.onHeadingTap { showPositionOptions() }
@@ -1911,7 +1911,7 @@ class MainActivity : Activity(), SensorEventListener {
         topHeader = header
         rootView.addView(header, FrameLayout.LayoutParams(
             -2, dp(44), Gravity.TOP or Gravity.END
-        ).apply { setMargins(0, dp(80), dp(12), 0) })
+        ).apply { setMargins(0, dp(67), dp(12), 0) })
         fullScreenButton = styledButton("⛶", 19f).apply {
             contentDescription = "Полноэкранная карта"
             setOnClickListener { setMapFullscreen(!mapFullscreen) }
@@ -2045,7 +2045,7 @@ class MainActivity : Activity(), SensorEventListener {
             }, LinearLayout.LayoutParams(dp(8), dp(h)).apply { marginEnd = dp(3) })
         }
         compactHandleRow.addView(compactSignalBars, FrameLayout.LayoutParams(
-            -2, dp(29), Gravity.START or Gravity.CENTER_VERTICAL).apply {
+            -2, dp(48), Gravity.START or Gravity.CENTER_VERTICAL).apply {
                 leftMargin = dp(7)
             })
 
@@ -2559,7 +2559,7 @@ class MainActivity : Activity(), SensorEventListener {
             height = dp(44)
             gravity = Gravity.TOP or Gravity.END
             topMargin = (if (displayMode == DisplayModePolicy.FULLSCREEN)
-                0 else systemTopInset) + (topPanelHeight.takeIf { it > 0 } ?: dp(61)) +
+                0 else systemTopInset) + (topPanelHeight.takeIf { it > 0 } ?: dp(50)) +
                 dp(if (isWide) 6 else 8)
             leftMargin = systemLeftInset
             rightMargin = systemRightInset + dp(10) + sideWidth
@@ -2608,12 +2608,24 @@ class MainActivity : Activity(), SensorEventListener {
             }
         }
         if (::progressStrip.isInitialized) {
+            val railVisible = floatingRail.visibility == View.VISIBLE
+            val available = (rootView.width.takeIf { it > 0 }
+                ?: resources.displayMetrics.widthPixels) -
+                systemLeftInset - systemRightInset - sideWidth - dp(24)
+            // Reserve the full right action rail plus breathing room.
+            // On a very narrow split-screen, move the strip above the rail
+            // instead of letting it obscure buttons or become unreadable.
+            val reserve = if (railVisible) dp(77) else 0
+            val lift = railVisible && available - reserve < dp(168)
             progressStrip.layoutParams =
                 (progressStrip.layoutParams as FrameLayout.LayoutParams).apply {
                     gravity = Gravity.BOTTOM
                     leftMargin = systemLeftInset + dp(12)
-                    rightMargin = systemRightInset + dp(12) + if (isWide) sideWidth else 0
-                    bottomMargin = systemBottomInset +
+                    rightMargin = systemRightInset + sideWidth + dp(12) +
+                        if (lift) 0 else reserve
+                    bottomMargin = if (lift)
+                        railBottom + dp(3 * (49 + 8) + 63)
+                    else systemBottomInset +
                         if (isWide || mapFullscreen || isChoosingCrosshair) dp(12)
                         else targetHeight + dp(12)
                 }

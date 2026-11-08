@@ -1,4 +1,4 @@
-name: Publish verified TowerRadar v0.19.0 APK
+name: Publish verified TowerRadar v0.20.0 APK
 on:
   workflow_run:
     workflows: ["Build Android APK"]
@@ -60,7 +60,7 @@ jobs:
           expected="$(awk '{print $1}' checks/sha256.txt)"
           actual="$(sha256sum extracted/towerradar-signed.apk | awk '{print $1}')"
           test "$expected" = "$actual"
-          cp extracted/towerradar-signed.apk TowerRadar-v0.19.0.apk
+          cp extracted/towerradar-signed.apk TowerRadar-v0.20.0.apk
           echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish direct GitHub Release APK download
@@ -70,15 +70,15 @@ jobs:
           TARGET_SHA: ${{ steps.selection.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view v0.19.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit v0.19.0 --prerelease --repo "$GITHUB_REPOSITORY"
-            gh release upload v0.19.0 TowerRadar-v0.19.0.apk --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.20.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit v0.20.0 --prerelease --repo "$GITHUB_REPOSITORY"
+            gh release upload v0.20.0 TowerRadar-v0.20.0.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.19.0 TowerRadar-v0.19.0.apk \
+            gh release create v0.20.0 TowerRadar-v0.20.0.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
-              --title "TowerRadar v0.19.0 — адаптивный интерфейс и иконка" \
-              --notes "TowerRadar 0.19.0 (Pre-release). Новая единая верхняя диагностическая панель без дублирования, вывод сети и сигнала, RSRP/RSRQ/SINR, вышек, базы и точности GPS. Автоматическая адаптация к DisplayCutout (центральные, боковые, широкие и несколько отверстий), ширине, повороту и масштабу шрифта. Системная строка состояния в стандартном режиме защищена контрастной тёмной подложкой при любых картографических слоях. В полноэкранном режиме панель располагается вокруг камеры. Нижняя панель 50dp с пятью столбиками сигнала слева и Подробнее по центру; три кнопки и компас опущены. Исправлена адаптивная иконка из утверждённого изображения — крылья, оранжевая стрелка и вышка помещаются внутри безопасной области. Автотесты, lint, сборка и постоянная подпись APK." \
+              --title "TowerRadar v0.20.0 — компактная панель и чистая иконка" \
+              --notes "TowerRadar 0.20.0: исправлена верхняя панель без верхнего обводящего контура, сеть и dBm помещаются вместе во вторую строку; высота адаптируется к шрифту и вырезу камеры. Панель обновления не перекрывает правые кнопки. Адаптивная иконка без встроенного скруглённого квадрата; рисунок в безопасной области Android. Два режима экрана, постоянная база вышек и прочие функции сохранены. Сборка, lint, тесты, проверка сертификата подписи APK." \
               --prerelease
           fi
-          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.19.0/TowerRadar-v0.19.0.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.20.0/TowerRadar-v0.20.0.apk" >> "$GITHUB_STEP_SUMMARY"

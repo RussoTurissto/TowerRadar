@@ -33,4 +33,33 @@ class HeaderPanelGeometryTest {
         assertTrue(slots.leading.endExclusive <= 212)
         assertTrue(slots.trailing!!.start >= 268)
     }
+    @Test fun variedPhonesDoNotPlaceLabelsInsideCutouts() {
+        val widths = listOf(240, 280, 320, 360, 393, 430, 600, 840)
+        for (width in widths) {
+            val variants = listOf(
+                emptyList<IntRange>(),
+                listOf((width / 2 - 24)..(width / 2 + 24)),
+                listOf(0..55),
+                listOf((width - 70)..width),
+                listOf((width / 2 - 75)..(width / 2 + 75)),
+                listOf(12..40, (width / 2 - 18)..(width / 2 + 18))
+            )
+            for (cutouts in variants) {
+                val slots = HeaderPanelGeometry.allocate(width, cutouts, 12, 98, 8)
+                for (segment in listOfNotNull(slots.leading, slots.trailing)) {
+                    assertTrue(segment.start >= 0)
+                    assertTrue(segment.endExclusive <= width)
+                    assertTrue(segment.width > 0)
+                    for (cutout in cutouts) {
+                        // Insets include a 12px breathing room around holes.
+                        assertTrue(segment.endExclusive <= cutout.first - 12 ||
+                            segment.start >= cutout.last + 12)
+                    }
+                }
+                if (slots.trailing != null && slots.leading != null)
+                    assertTrue(slots.leading.endExclusive <= slots.trailing.start)
+            }
+        }
+    }
+
 }

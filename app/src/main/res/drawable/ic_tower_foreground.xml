@@ -3,8 +3,8 @@
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
     <!-- Icon fits inside adaptive-icon mask safe area. -->
-    <group android:scaleX="0.072" android:scaleY="0.072"
-        android:translateX="17.136" android:translateY="17.136">
+    <group android:scaleX="0.0718" android:scaleY="0.0718"
+        android:translateX="17.2384" android:translateY="18.3154">
         <path android:pathData="M495,105 A407,407 0,0 0,105 495" android:fillColor="#00000000" android:strokeColor="#0BB2A9" android:strokeWidth="29" android:strokeLineCap="butt" />
         <path android:pathData="M529,105 A407,407 0,0 1,919 495" android:fillColor="#00000000" android:strokeColor="#0BB2A9" android:strokeWidth="29" android:strokeLineCap="butt" />
         <path android:pathData="M919,529 A407,407 0,0 1,529 919" android:fillColor="#00000000" android:strokeColor="#0BB2A9" android:strokeWidth="29" android:strokeLineCap="butt" />

@@ -9,8 +9,8 @@ android {
         applicationId = "com.russoturissto.towerradar"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.19.0"
+        versionCode = 20
+        versionName = "0.20.0"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
