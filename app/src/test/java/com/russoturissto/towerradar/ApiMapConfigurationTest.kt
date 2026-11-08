@@ -31,6 +31,13 @@ class ApiMapConfigurationTest {
             .contains("key=abc-123"))
     }
 
+    @Test fun mapTilerSatelliteUsesRasterDatasetNotMissingVectorStyle() {
+        val satellite = MapSources.providers.first { it.id == "maptiler-satellite" }
+        val url = MapSources.sampleTileUrl(satellite, 52.52, 13.40, "free-test")
+        assertTrue(url.contains("/tiles/satellite-v2/"))
+        assertTrue(url.endsWith(".jpg?key=free-test"))
+    }
+
     @Test fun googleHasThreeOfficialSessionBasedModes() {
         val modes = MapSources.allProviders.filter { it.id.startsWith("google-") }
         assertEquals(3, modes.size)

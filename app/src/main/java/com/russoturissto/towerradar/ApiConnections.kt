@@ -119,6 +119,8 @@ object ApiConnections {
         return try {
             when {
                 provider.id.startsWith("google-") -> googleSession(key, provider)
+                provider.id == "maptiler-satellite" ->
+                    tileCheck(MapSources.sampleTileUrl(provider, lat, lon, key), provider.name)
                 MapSources.mapTiler(provider) ->
                     styleCheck(MapSources.tileTemplate(provider, key), provider.name)
                 MapSources.yandexWeb(provider) ->

@@ -47,7 +47,7 @@ object MapSources {
             "https://api.maptiler.com/maps/streets-v4/style.json?key={api_key}",
             "© MapTiler · © OpenStreetMap contributors", "map_key_maptiler"),
         MapProvider("maptiler-satellite", "MapTiler · Спутник",
-            "https://api.maptiler.com/maps/satellite/style.json?key={api_key}",
+            "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key={api_key}",
             "© MapTiler · спутниковые данные", "map_key_maptiler"),
         MapProvider("maptiler-hybrid", "MapTiler · Гибрид",
             "https://api.maptiler.com/maps/hybrid/style.json?key={api_key}",
@@ -84,11 +84,14 @@ object MapSources {
     }
 
     fun style(provider: MapProvider, key: String = "", session: String = ""): Style.Builder {
-        if (mapTiler(provider)) return Style.Builder().fromUri(tileTemplate(provider, key))
+        // MapTiler satellite imagery is a licensed raster tileset; other
+        // MapTiler modes are published, standard MapLibre vector styles.
+        if (mapTiler(provider) && provider.id != "maptiler-satellite")
+            return Style.Builder().fromUri(tileTemplate(provider, key))
         val tileSet = TileSet("2.2.0", tileTemplate(provider, key, session))
         tileSet.setMinZoom(0f)
         tileSet.setMaxZoom(when {
-            provider.id.startsWith("google-") -> 22f
+            provider.id.startsWith("google-") || provider.id == "maptiler-satellite" -> 22f
             provider.id == "yandex" -> 20f
             else -> 19f
         })
