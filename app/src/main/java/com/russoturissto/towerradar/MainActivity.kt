@@ -57,6 +57,8 @@ import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.ProgressBar
+import android.os.Handler
 import android.widget.AdapterView
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -203,6 +205,14 @@ class MainActivity : Activity(), SensorEventListener {
     private var lastFetchRadius = 0
     private var lastFetchTime = 0L
     private var sites = emptyList<TowerSite>()
+    private lateinit var towerDatabase: TowerDatabase
+    private lateinit var progressStrip: LinearLayout
+    private lateinit var progressLabel: TextView
+    private lateinit var progressBar: ProgressBar
+    private val progressHandler = Handler(Looper.getMainLooper())
+    private var progressSequence = 0
+    private var technologyFilter: String? = null
+    private var sourceFilter: String? = null
     private var visible = emptyList<TowerSite>()
     private var selectedAimSite: TowerSite? = null
     private var aimAligned = false
@@ -687,7 +697,8 @@ class MainActivity : Activity(), SensorEventListener {
             "Индикатор направления: " + if (showCone) "Включён" else "Выключен",
             "Яркость луча и сектора: раздельная настройка",
             "Кеш карт: лимит " + mapTileCache.limitMb() + " МБ",
-            "Резервная копия: защищённый экспорт и восстановление"
+            "Резервная копия: защищённый экспорт и восстановление",
+            "Хранилище и данные: кеш / база вышек"
         )
         KhakiDialogBuilder(this, palette).setTitle("Настройки · TowerRadar")
             .setItems(items) { _, selected ->
@@ -706,6 +717,58 @@ class MainActivity : Activity(), SensorEventListener {
                     6 -> showDirectionBrightness()
                     7 -> showCacheSettings()
                     8 -> showBackupMenu()
+                    9 -> showTowerStorageSettings()
+                }
+            }.setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun showTowerStorageSettings() {
+        val total = try { towerDatabase.count() } catch (_: Exception) { 0 }
+        KhakiDialogBuilder(this, palette).setTitle("Хранилище и данные")
+            .setMessage("В базе: " + total + " объектов. Кеш временных файлов и база " +
+                "вышек очищаются отдельно. API-ключи и настройки не затрагиваются.")
+            .setItems(arrayOf("Очистить кеш приложения", "Удалить базу вышек")) { _, action ->
+                if (busy) {
+                    Toast.makeText(this, "Дождитесь окончания обновления", Toast.LENGTH_LONG).show()
+                } else if (action == 0) {
+                    KhakiDialogBuilder(this, palette).setTitle("Очистить кеш?")
+                        .setMessage("Временные результаты запросов и кеш карт будут удалены. " +
+                            "Постоянная база вышек останется.")
+                        .setPositiveButton("Очистить") { _, _ ->
+                            getSharedPreferences("tower_results", Context.MODE_PRIVATE)
+                                .edit().clear().apply()
+                            mapTileCache.clear { _, message ->
+                                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                            }
+                        }.setNegativeButton("Отмена", null).show()
+                } else {
+                    KhakiDialogBuilder(this, palette).setTitle("Удалить " + total + " объектов?")
+                        .setMessage("База вышек будет удалена. Кеш карт, API-ключи и " +
+                            "настройки останутся. Новый поиск — вручную или после перезапуска.")
+                        .setPositiveButton("Удалить базу") { _, _ ->
+                            executor.execute {
+                                try {
+                                    towerDatabase.clear()
+                                    getSharedPreferences("tower_results", Context.MODE_PRIVATE)
+                                        .edit().clear().apply()
+                                    runOnUiThread {
+                                        if (!isDestroyed) {
+                                            sites = emptyList()
+                                            servingSite = null
+                                            lastFetch = null
+                                            updateOperatorChoices()
+                                            showPins()
+                                            updateOverlays()
+                                            status.text = "База вышек очищена"
+                                        }
+                                    }
+                                } catch (_: Exception) {
+                                    runOnUiThread {
+                                        Toast.makeText(this, "Ошибка очистки базы", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            }
+                        }.setNegativeButton("Отмена", null).show()
                 }
             }.setNegativeButton("Закрыть", null).show()
     }
@@ -1612,6 +1675,7 @@ class MainActivity : Activity(), SensorEventListener {
         MapLibre.getInstance(this)
         mapTileCache = MapTileCache(this)
         mapTileCache.initialize()
+        towerDatabase = TowerDatabase(this)
         HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
             val url = request.url.toString()
@@ -1632,6 +1696,35 @@ class MainActivity : Activity(), SensorEventListener {
         createScreen()
         applyDisplayMode()
         mapView.onCreate(state)
+        // Restore all observations from the SQLite store immediately at startup.
+        executor.execute {
+            try {
+                val legacy = getSharedPreferences("tower_results", Context.MODE_PRIVATE)
+                if (!legacy.getBoolean("migrated_to_database", false)) {
+                    val body = legacy.getString("body", null)
+                    val lat = legacy.getString("lat", null)?.toDoubleOrNull()
+                    val lon = legacy.getString("lon", null)?.toDoubleOrNull()
+                    val range = legacy.getInt("radius", -1)
+                    if (body != null && lat != null && lon != null &&
+                        lat in -90.0..90.0 && lon in -180.0..180.0 &&
+                        range in TowerData.radiiKm) {
+                        try { towerDatabase.merge(TowerData.parse(body, lat, lon, range)) }
+                        catch (_: Exception) {}
+                    }
+                    legacy.edit().putBoolean("migrated_to_database", true).apply()
+                }
+                val saved = towerDatabase.all()
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        sites = (sites + saved).distinctBy { it.id }
+                        updateOperatorChoices()
+                        showPins()
+                        if (saved.isNotEmpty()) status.text =
+                            "Сохранено " + saved.size + " · проверка обновлений"
+                    }
+                }
+            } catch (_: Exception) {}
+        }
         mapView.getMapAsync { ready ->
             map = ready
             // Restore camera BEFORE loading any style to avoid OSM/world-map flashes.
@@ -1639,6 +1732,12 @@ class MainActivity : Activity(), SensorEventListener {
             val storedCamera = readLastCamera()
             if (storedCamera != null) {
                 ready.moveCamera(CameraUpdateFactory.newCameraPosition(storedCamera))
+                if (center == null) {
+                    center = storedCamera.target
+                    rootView.postDelayed({
+                        if (!isDestroyed && !busy && lastFetch == null) load(false)
+                    }, 1200L)
+                }
                 initiallyCentered = true // GPS updates must not steal a saved view.
                 restoredLastCamera = true
             } else {
@@ -1903,6 +2002,7 @@ class MainActivity : Activity(), SensorEventListener {
                 center = it
                 manualCenter = true
                 lastFetch = null
+                expandSheet(false)
                 load(force = true)
                 Toast.makeText(this, "Ищем вышки в центре карты", Toast.LENGTH_SHORT).show()
             }
@@ -2002,6 +2102,30 @@ class MainActivity : Activity(), SensorEventListener {
             marginStart = dp(10)
         })
         updateOperatorChoices()
+        val filters = row()
+        controls.addView(filters, LinearLayout.LayoutParams(-1, dp(45)))
+        val technologies = listOf("Все технологии", "2G", "3G", "4G", "5G")
+        val techSpinner = Spinner(this).apply { adapter = choice(technologies) }
+        filters.addView(techSpinner, LinearLayout.LayoutParams(0, dp(44), 1f))
+        val providers = listOf("Все источники", "OpenStreetMap",
+            "OpenCellID", "mylnikov", "beacondb", "MCC-MNC")
+        val providerSpinner = Spinner(this).apply { adapter = choice(providers) }
+        filters.addView(providerSpinner, LinearLayout.LayoutParams(0, dp(44), 1f)
+            .apply { marginStart = dp(6) })
+        techSpinner.onItemSelectedListener = object: AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                technologyFilter = technologies.getOrNull(position)?.takeIf { position > 0 }
+                showPins()
+            }
+        }
+        providerSpinner.onItemSelectedListener = object: AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                sourceFilter = providers.getOrNull(position)?.takeIf { position > 0 }
+                showPins()
+            }
+        }
 
         val actions = row()
         controls.addView(actions, LinearLayout.LayoutParams(-1, dp(49)).apply {
@@ -2013,14 +2137,14 @@ class MainActivity : Activity(), SensorEventListener {
         })
         val searchControl = styledButton("Искать здесь", 12f)
         actions.addView(searchControl, LinearLayout.LayoutParams(0, dp(47), 1f))
-        refresh.setOnClickListener { load(force = true) }
+        refresh.setOnClickListener { expandSheet(false); load(force = true) }
         searchControl.setOnClickListener {
             map?.cameraPosition?.target?.let { point ->
                 center = point
                 manualCenter = true
                 lastFetch = null
-                load(force = true)
                 expandSheet(false)
+                load(force = true)
             }
         }
 
@@ -2124,7 +2248,7 @@ class MainActivity : Activity(), SensorEventListener {
             setOnClickListener { details.visibility = View.GONE; clearAimSelection() }
         }, LinearLayout.LayoutParams(dp(43), dp(40)))
         detailBody = text("", 12f, palette.secondary).apply {
-            maxLines = 9
+            maxLines = 18
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         details.addView(detailBody)
@@ -2138,6 +2262,32 @@ class MainActivity : Activity(), SensorEventListener {
             Gravity.START or Gravity.BOTTOM).apply {
             setMargins(dp(8), 0, 0, dp(91))
         })
+        // Floating progress strip (approved variant #4).
+        progressStrip = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(palette.surface, 12)
+            elevation = dp(10).toFloat()
+            setPadding(dp(12), dp(7), dp(12), dp(8))
+            visibility = View.GONE
+        }
+        progressLabel = text("Обновление вышек", 11f, palette.text).apply {
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        progressStrip.addView(progressLabel, LinearLayout.LayoutParams(-1, -2))
+        progressBar = ProgressBar(this, null,
+            android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            isIndeterminate = true
+            progressTintList = ColorStateList.valueOf(palette.olive)
+            indeterminateTintList = ColorStateList.valueOf(palette.olive)
+        }
+        progressStrip.addView(progressBar, LinearLayout.LayoutParams(-1, dp(3))
+            .apply { topMargin = dp(6) })
+        rootView.addView(progressStrip,
+            FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
+                setMargins(dp(12), 0, dp(12), dp(112))
+            })
         // Crosshair mode is a separate, focused location picker: drag the map
         // under the reticle, tap a desired point or zoom for precise placement.
         crosshairReticle = CrosshairView(this, palette.dark).apply {
@@ -2440,6 +2590,17 @@ class MainActivity : Activity(), SensorEventListener {
                 rightMargin = if (isWide) systemRightInset + dp(9) else 0
                 bottomMargin = if (isWide) 0 else targetHeight + systemBottomInset + dp(12)
             }
+        }
+        if (::progressStrip.isInitialized) {
+            progressStrip.layoutParams =
+                (progressStrip.layoutParams as FrameLayout.LayoutParams).apply {
+                    gravity = Gravity.BOTTOM
+                    leftMargin = systemLeftInset + dp(12)
+                    rightMargin = systemRightInset + dp(12) + if (isWide) sideWidth else 0
+                    bottomMargin = systemBottomInset +
+                        if (isWide || mapFullscreen || isChoosingCrosshair) dp(12)
+                        else targetHeight + dp(12)
+                }
         }
         if (::mapAttribution.isInitialized) {
             mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
@@ -2863,6 +3024,41 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun progressStep(label: String, processed: Int? = null, total: Int? = null) {
+        runOnUiThread {
+            if (!::progressStrip.isInitialized || isDestroyed) return@runOnUiThread
+            ++progressSequence
+            val measurable = total != null && total > 0 && processed != null
+            if (measurable) {
+                val part = processed!!
+                val whole = total!!
+                val percent = (part * 100 / whole).coerceIn(0, 99)
+                progressLabel.text = label + " · " + part + "/" + whole + " · " + percent + "%"
+                progressBar.isIndeterminate = false
+                progressBar.progress = percent
+            } else {
+                progressLabel.text = label
+                progressBar.isIndeterminate = true
+            }
+            progressStrip.visibility = View.VISIBLE
+        }
+    }
+
+    private fun progressEnd(message: String, success: Boolean) {
+        runOnUiThread {
+            if (!::progressStrip.isInitialized || isDestroyed) return@runOnUiThread
+            val ticket = ++progressSequence
+            progressLabel.text = message
+            progressBar.isIndeterminate = false
+            progressBar.progress = if (success) 100 else 0
+            progressStrip.visibility = View.VISIBLE
+            progressHandler.postDelayed({
+                if (progressSequence == ticket && ::progressStrip.isInitialized)
+                    progressStrip.visibility = View.GONE
+            }, if (success) 3500L else 7000L)
+        }
+    }
+
     private fun load(force: Boolean) {
         val point = center ?: map?.cameraPosition?.target
         if (point == null) {
@@ -2874,8 +3070,10 @@ class MainActivity : Activity(), SensorEventListener {
             return
         }
         val previous = lastFetch
-        if (!force && previous != null && radiusKm == lastFetchRadius && sites.isNotEmpty() &&
-            TowerData.distanceKm(point.latitude, point.longitude, previous.latitude, previous.longitude) < (radiusKm / 2.0).coerceAtLeast(0.5)) return
+        if (!force && previous != null && radiusKm == lastFetchRadius &&
+            TowerData.distanceKm(point.latitude, point.longitude,
+                previous.latitude, previous.longitude) <
+                (radiusKm / 2.0).coerceAtLeast(0.5)) return
 
         val lat = point.latitude
         val lon = point.longitude
@@ -2884,60 +3082,82 @@ class MainActivity : Activity(), SensorEventListener {
         refresh.isEnabled = false
         searchHere.isEnabled = false
         details.visibility = View.GONE
-        status.text = "Загружаем объекты связи · $range км…"
+        status.text = "Обновляем объекты связи · " + range + " км…"
         lastFetchTime = System.currentTimeMillis()
+        progressStep("Проверяем сохранённые данные")
         executor.execute {
             try {
-                val cached = if (force) null else cache(lat, lon, range)
-                val osmSites = cached ?: fetch(lat, lon, range)
-                val key = getPreferences(Context.MODE_PRIVATE)
-                    .getString("opencellid_key", "").orEmpty()
-                var cellError = false
-                val cells = if (key.isBlank()) emptyList() else try {
-                    CellSources.fetch(key, lat, lon)
-                } catch (_: Exception) {
-                    cellError = true
-                    emptyList()
-                }
-                val result = (osmSites + cells).distinctBy { it.id }
-                runOnUiThread {
-                    if (isDestroyed || isFinishing) return@runOnUiThread
-                    busy = false
-                    refresh.isEnabled = true
-                    searchHere.isEnabled = true
-                    sites = result
-                    lastFetch = LatLng(lat, lon)
-                    lastFetchRadius = range
-                    updateOperatorChoices()
-                    showPins()
-                    servingCell?.let(::updateServingCell)
-                    status.text = "Найдено: " + sites.size + " · " + range + " км · " +
-                        if (cellError) "OpenCellID недоступен" else if (cells.isNotEmpty())
-                            "OSM + OpenCellID (" + cells.size + " сот)"
-                        else if (cached != null) "кеш OSM" else "OpenStreetMap"
-                    if (pendingManualSearch) {
-                        pendingManualSearch = false
-                        load(force = true)
+                if (!force && towerDatabase.recentlyChecked(lat, lon, range, 3L * 3600000L)) {
+                    val saved = towerDatabase.all()
+                    runOnUiThread {
+                        if (!isDestroyed && !isFinishing) {
+                            sites = saved
+                            lastFetch = LatLng(lat, lon)
+                            lastFetchRadius = range
+                            updateOperatorChoices()
+                            showPins()
+                            status.text = "Данные актуальны · " + saved.size +
+                                " объектов · последняя проверка менее 3 часов назад"
+                        }
                     }
+                    progressEnd("Сохранённая база актуальна", true)
+                } else {
+                    progressStep("OpenStreetMap · ожидаем ответ сервера")
+                    // Refresh OSM on a due search. Legacy single-area cache is only fallback.
+                    val osm = fetch(lat, lon, range)
+                    progressStep("OpenCellID · ожидаем ответ сервера")
+                    val key = getPreferences(Context.MODE_PRIVATE)
+                        .getString("opencellid_key", "").orEmpty()
+                    var cellError = false
+                    val cells = if (key.isBlank()) emptyList() else try {
+                        CellSources.fetch(key, lat, lon)
+                    } catch (_: Exception) {
+                        cellError = true
+                        emptyList()
+                    }
+                    val found = (osm + cells).distinctBy { it.id }
+                    progressStep("Сравнение и запись в базу", 0, found.size)
+                    val stats = towerDatabase.merge(found) { done, total ->
+                        progressStep("Сравнение и запись в базу", done, total)
+                    }
+                    // A successful transaction is required before the UI can report 100%.
+                    towerDatabase.markChecked(lat, lon, range)
+                    val all = towerDatabase.all()
+                    runOnUiThread {
+                        if (!isDestroyed && !isFinishing) {
+                            sites = all
+                            lastFetch = LatLng(lat, lon)
+                            lastFetchRadius = range
+                            updateOperatorChoices()
+                            showPins()
+                            servingCell?.let(::updateServingCell)
+                            status.text = "Сохранено " + all.size + " · новых " +
+                                stats.added + " · уточнено " + stats.changed +
+                                if (cellError) " · OpenCellID недоступен" else ""
+                        }
+                    }
+                    progressEnd("Завершено · +" + stats.added +
+                        " · исправлено " + stats.changed, true)
                 }
             } catch (e: Exception) {
-                val cached = cache(lat, lon, range)
+                val saved = try { towerDatabase.all() } catch (_: Exception) { emptyList() }
                 runOnUiThread {
-                    if (isDestroyed || isFinishing) return@runOnUiThread
-                    busy = false
-                    refresh.isEnabled = true
-                    searchHere.isEnabled = true
-                    if (cached != null) {
-                        sites = cached
-                        lastFetch = LatLng(lat, lon)
-                        lastFetchRadius = range
+                    if (!isDestroyed && !isFinishing) {
+                        sites = saved
                         updateOperatorChoices()
                         showPins()
-                        status.text = "Нет соединения · показан сохранённый результат"
-                    } else {
-                        status.text = e.message?.take(140) ?: "Не удалось загрузить данные."
+                        status.text = if (saved.isNotEmpty())
+                            "Нет сети · сохранённые вышки: " + saved.size
+                        else e.message?.take(120) ?: "Не удалось загрузить данные"
                     }
-                    if (pendingManualSearch) {
+                }
+                progressEnd("Ошибка обновления · сохранённая база не затронута", false)
+            } finally {
+                runOnUiThread {
+                    busy = false
+                    if (::refresh.isInitialized) refresh.isEnabled = true
+                    if (::searchHere.isInitialized) searchHere.isEnabled = true
+                    if (pendingManualSearch && !isDestroyed && !isFinishing) {
                         pendingManualSearch = false
                         load(force = true)
                     }
@@ -2945,7 +3165,6 @@ class MainActivity : Activity(), SensorEventListener {
             }
         }
     }
-
 
     /** Only a precisely matched radio-cell identifier may have a linked map marker. */
     private fun updateServingCell(reading: ServingCell?) {
@@ -2973,41 +3192,52 @@ class MainActivity : Activity(), SensorEventListener {
             cellStatus.text = "Сота зарегистрирована, но её идентификатор не раскрыт устройством."
             return
         }
-        val matching = sites.firstOrNull { it.id == "opencellid/" + reading.identity }
+        val matching = sites.firstOrNull {
+            it.id == "opencellid/" + reading.identity ||
+                it.id == "mylnikov/" + reading.identity ||
+                it.id == "beacondb/" + reading.identity ||
+                it.id == "mccmnc/" + reading.identity
+        }
         if (matching != null) {
             servingSite = matching
-            cellStatus.text = "Сота " + reading.cellId + " · точка в OpenCellID (примерная)"
+            cellStatus.text = "Сота " + reading.cellId + " · " + matching.source
             updateOverlays()
             return
         }
         if (servingSite != null) {
-            cellStatus.text = "Сота " + reading.cellId + " · оценка OpenCellID, не физическая вышка"
+            cellStatus.text = "Сота " + reading.cellId + " · " + servingSite?.source
             return
         }
         val key = getPreferences(Context.MODE_PRIVATE)
             .getString("opencellid_key", "").orEmpty()
-        if (key.isBlank()) {
-            cellStatus.text = "Сота " + reading.cellId +
-                " · для координат нужен ключ OpenCellID в настройках"
-            return
-        }
+        // Public databases do not require an OpenCellID key.
         val now = SystemClock.elapsedRealtime()
         if (requestedCellId == reading.identity && now - cellRequestAt < 600000L) {
             cellStatus.text = "Сота " + reading.cellId +
-                " · местоположение неизвестно (нет совпадения в OpenCellID)"
+                " · местоположение неизвестно (совпадение не найдено)"
             return
         }
         requestedCellId = reading.identity
         cellRequestAt = now
-        cellStatus.text = "Сота " + reading.cellId + " · ищем координаты в OpenCellID…"
+        cellStatus.text = "Сота " + reading.cellId +
+            " · поиск в базах радиосот"
         cellExecutor.execute {
-            val site = CellSources.lookup(key, reading)
+            val site = AdditionalCellSources.lookup(key, reading, this@MainActivity)
+            if (site != null) {
+                try { towerDatabase.merge(listOf(site)) } catch (_: Exception) {}
+            }
             runOnUiThread {
-                if (isDestroyed || isFinishing || servingCell?.identity != reading.identity) return@runOnUiThread
+                if (isDestroyed || isFinishing || servingCell?.identity != reading.identity)
+                    return@runOnUiThread
                 servingSite = site
+                if (site != null) {
+                    sites = (sites + site).distinctBy { it.id }
+                    updateOperatorChoices()
+                    showPins()
+                }
                 cellStatus.text = if (site == null)
-                    "Сота " + reading.cellId + " · координаты в OpenCellID не найдены"
-                else "Сота " + reading.cellId + " · пунктир к примерной позиции OpenCellID"
+                    "Сота " + reading.cellId + " · координаты неизвестны во всех источниках"
+                else "Сота " + reading.cellId + " · оценка " + site.source
                 updateOverlays()
             }
         }
@@ -3032,13 +3262,24 @@ class MainActivity : Activity(), SensorEventListener {
     private fun showPins() {
         refreshCameraStatus()
         visible = sites.filter {
-            selectedOperator == null || (selectedOperator == unknown && it.operator == null) || it.operator == selectedOperator
+            (selectedOperator == null || (selectedOperator == unknown && it.operator == null) ||
+                it.operator == selectedOperator) &&
+            (technologyFilter == null || when (technologyFilter) {
+                "2G" -> it.technology?.contains("GSM", true) == true
+                "3G" -> it.technology?.contains("UMTS", true) == true ||
+                    it.technology?.contains("WCDMA", true) == true
+                "4G" -> it.technology?.contains("LTE", true) == true
+                "5G" -> it.technology?.contains("NR", true) == true ||
+                    it.technology?.contains("5G", true) == true
+                else -> true
+            }) &&
+            (sourceFilter == null || it.source.contains(sourceFilter!!, true))
         }
         if (!styled) return
         val features = visible.map { site ->
             Feature.fromGeometry(Point.fromLngLat(site.longitude, site.latitude)).apply {
                 addBooleanProperty("mobile", site.mobile)
-                addBooleanProperty("estimated", site.id.startsWith("opencellid/"))
+                addBooleanProperty("estimated", !site.source.startsWith("OpenStreetMap"))
             }
         }
         (map?.style?.getSource("towers") as? GeoJsonSource)
@@ -3298,8 +3539,8 @@ class MainActivity : Activity(), SensorEventListener {
             gpsForAim?.takeIf { it.hasAccuracy() && it.accuracy > 70f }?.let {
                 "Ориентирование приблизительное: точность GPS ±" + it.accuracy.toInt() + " м"
             },
-            if (nearest.id.startsWith("opencellid/"))
-                "Примерная позиция радиосоты OpenCellID · НЕ координата физической мачты"
+            if (!nearest.source.startsWith("OpenStreetMap"))
+                "Примерное положение радиосоты · НЕ координата физической мачты"
             else if (nearest.mobile) "Объект связи из OpenStreetMap (OSM)"
             else "Назначение вышки не подтверждено",
             nearest.technology?.let { "Технологии: " + it },
@@ -3312,6 +3553,10 @@ class MainActivity : Activity(), SensorEventListener {
                 (if (manualPoint != null) " · от ручной точки" else " · от GPS"),
             String.format(Locale.US, "Координаты: %.6f, %.6f", nearest.latitude, nearest.longitude),
             "Источник / достоверность: " + nearest.source,
+            towerDatabase.lastChanged(nearest.id)?.let {
+                "Изменена запись: " + java.text.DateFormat.getDateTimeInstance()
+                    .format(java.util.Date(it))
+            },
             "Источник: " + nearest.url
         ).joinToString("\n")
         details.visibility = View.VISIBLE

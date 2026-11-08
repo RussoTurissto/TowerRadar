@@ -1,4 +1,4 @@
-name: Publish verified TowerRadar v0.17.0 APK
+name: Publish verified TowerRadar v0.18.0 APK
 on:
   workflow_run:
     workflows: ["Build Android APK"]
@@ -60,7 +60,7 @@ jobs:
           expected="$(awk '{print $1}' checks/sha256.txt)"
           actual="$(sha256sum extracted/towerradar-signed.apk | awk '{print $1}')"
           test "$expected" = "$actual"
-          cp extracted/towerradar-signed.apk TowerRadar-v0.17.0.apk
+          cp extracted/towerradar-signed.apk TowerRadar-v0.18.0.apk
           echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish direct GitHub Release APK download
@@ -70,15 +70,15 @@ jobs:
           TARGET_SHA: ${{ steps.selection.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view v0.17.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit v0.17.0 --prerelease --repo "$GITHUB_REPOSITORY"
-            gh release upload v0.17.0 TowerRadar-v0.17.0.apk --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.18.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit v0.18.0 --prerelease --repo "$GITHUB_REPOSITORY"
+            gh release upload v0.18.0 TowerRadar-v0.18.0.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.17.0 TowerRadar-v0.17.0.apk \
+            gh release create v0.18.0 TowerRadar-v0.18.0.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
-              --title "TowerRadar v0.17.0 — режимы отображения" \
-              --notes "TowerRadar 0.17.0 (Pre-release). В настройках Экран и отображение можно выбрать стандартный или полноэкранный режим. Выбор сохраняется после перезапуска и резервного копирования. Полноэкранный режим скрывает строку состояния, расширяет карту в область вокруг фронтальной камеры и показывает миниатюрные сведения о сети и количестве найденных вышек по обе стороны выреза, с автоматическим учётом геометрии DisplayCutout. Существующая кнопка полноэкранной карты остаётся независимой. Выполнены unit-тесты, lint и сборка; APK подписан прежним постоянным сертификатом." \
+              --title "TowerRadar v0.18.0 — база вышек и дополнительные источники" \
+              --notes "TowerRadar 0.18.0 (Pre-release). Постоянная локальная SQLite база вышек; восстановление после перезапуска, накопление данных, автоматическая проверка OSM и OpenCellID, защита данных при ошибках сети, реальный прогресс в плавающей панели, исправлен размер иконки, дополнительные источники Mylnikov и beaconDB, резервный MCC-MNC с лимитом запросов, расширенные сведения по вышкам, фильтры по технологии и источнику, раздельная очистка базы и кеша, автоматическое сворачивание панели при поиске. Текущая логика компаса, наведения, пользовательские настройки и подпись APK сохранены. Версия предварительная." \
               --prerelease
           fi
-          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.17.0/TowerRadar-v0.17.0.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.18.0/TowerRadar-v0.18.0.apk" >> "$GITHUB_STEP_SUMMARY"

@@ -91,7 +91,34 @@ object TowerData {
                     tags.optString("ref").takeIf { it.isNotBlank() }?.let { "Обозначение: " + it },
                     tags.optString("frequency").takeIf { it.isNotBlank() }?.let { "Частота: " + it },
                     tags.optString("antenna:type").takeIf { it.isNotBlank() }?.let { "Тип антенны: " + it },
-                    tags.optString("tower:type").takeIf { it.isNotBlank() }?.let { "Тип конструкции: " + it }
+                    tags.optString("tower:type").takeIf { it.isNotBlank() }?.let { "Тип конструкции: " + it },
+                    tags.optString("frequency:downlink").takeIf { it.isNotBlank() }?.let {
+                        "Частота приёма: " + it
+                    },
+                    tags.optString("network").takeIf { it.isNotBlank() }?.let {
+                        "Сеть: " + it.take(90)
+                    },
+                    tags.optString("support").takeIf { it.isNotBlank() }?.let {
+                        "Опора: " + it.take(90)
+                    },
+                    tags.optString("tower:construction").takeIf { it.isNotBlank() }?.let {
+                        "Конструкция: " + it.take(90)
+                    },
+                    tags.optString("manufacturer").takeIf { it.isNotBlank() }?.let {
+                        "Изготовитель: " + it.take(90)
+                    },
+                    tags.optString("start_date").takeIf { it.isNotBlank() }?.let {
+                        "Год установки: " + it.take(30)
+                    },
+                    tags.optString("communication:mobile_phone").takeIf { it.isNotBlank() }?.let {
+                        "Мобильная связь: " + it.take(90)
+                    },
+                    tags.optString("lte:cellid").takeIf { it.isNotBlank() }?.let {
+                        "LTE Cell ID (OSM): " + it.take(70)
+                    },
+                    tags.optString("gsm:cellid").takeIf { it.isNotBlank() }?.let {
+                        "GSM Cell ID (OSM): " + it.take(70)
+                    }
                 ).joinToString(" · ").takeIf { it.isNotBlank() }
             )
         }
