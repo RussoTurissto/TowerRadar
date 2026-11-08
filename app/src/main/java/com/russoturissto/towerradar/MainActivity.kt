@@ -224,6 +224,12 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var progressBar: ProgressBar
     private val progressHandler = Handler(Looper.getMainLooper())
     private var progressSequence = 0
+    private var progressRequested = false
+    private var lastTowerCardVisible = false
+    private var selectedOriginPoint: LatLng? = null
+    private var selectedOriginAccuracy: Float? = null
+    private var terrainRevision = 0
+    private var terrainDialog: android.app.Dialog? = null
     private var technologyFilter: String? = null
     private var sourceFilter: String? = null
     private var visible = emptyList<TowerSite>()
@@ -1443,7 +1449,34 @@ class MainActivity : Activity(), SensorEventListener {
             .setNegativeButton("Отмена", null).show()
     }
 
+
+    /** One invalidation path for explicit geolocation changes and meaningful GPS moves. */
+    private fun onActivePositionChanged() {
+        ++terrainRevision
+        terrainDialog?.dismiss()
+        terrainDialog = null
+        if (::details.isInitialized) details.visibility = View.GONE
+        clearAimSelection()
+        if (!isFinishing && !isDestroyed) {
+            KhakiDialogBuilder(this, palette)
+                .setTitle("Геопозиция изменена")
+                .setMessage("Для корректного профиля высот выберите требуемую вышку " +
+                    "на карте повторно.")
+                .setPositiveButton("Понятно", null)
+                .show()
+        }
+    }
+
     private fun setManualPosition(point: LatLng) {
+        val oldManual = manualPoint
+        val previous = activeUserPoint()
+        val delta = previous?.let {
+            TowerData.distanceKm(it.latitude, it.longitude,
+                point.latitude, point.longitude) * 1000.0
+        } ?: Double.POSITIVE_INFINITY
+        val changed = PositionChangePolicy.manualUpdateChangesOrigin(
+            oldManual != null, delta)
+        if (changed) onActivePositionChanged()
         manualPoint = point
         manualCenter = true
         center = point
@@ -1459,6 +1492,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun useAutomaticPosition() {
+        if (manualPoint != null) onActivePositionChanged()
         manualPoint = null
         manualCenter = false
         details.visibility = View.GONE
@@ -2389,13 +2423,9 @@ class MainActivity : Activity(), SensorEventListener {
             setShadowLayer(dp(1).toFloat(), 0f, dp(1).toFloat(),
                 if (palette.dark) Color.BLACK else Color.WHITE)
         }
-        mapAttribution.addOnLayoutChangeListener { _, _, top, _, bottom,
-                                                    _, oldTop, _, oldBottom ->
-            if (bottom - top != oldBottom - oldTop &&
-                ::progressStrip.isInitialized && ::rootView.isInitialized) {
-                progressStrip.post { if (!isDestroyed) applyResponsiveLayout(false) }
-            }
-        }
+        // Text changes can alter the actual copyright height. The overlay
+        // coordinator runs before drawing; never restart/cancel the sheet animator
+        // because a provider's attribution has wrapped to a new line.
         rootView.addView(mapAttribution, FrameLayout.LayoutParams(-2, -2,
             Gravity.START or Gravity.BOTTOM).apply {
             setMargins(dp(8), 0, 0, dp(91))
@@ -2468,6 +2498,15 @@ class MainActivity : Activity(), SensorEventListener {
         cancelPicker.setOnClickListener { finishCrosshairMode(false) }
         confirmPicker.setOnClickListener { finishCrosshairMode(true) }
         installSafeInsets()
+        rootView.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                if (!isDestroyed && ::progressStrip.isInitialized &&
+                    ::mapAttribution.isInitialized && ::details.isInitialized) {
+                    updateFloatingOverlayPositions()
+                }
+                return true
+            }
+        })
         rootView.post { applyResponsiveLayout(false) }
 
         radius.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -2747,20 +2786,19 @@ class MainActivity : Activity(), SensorEventListener {
                 bottomMargin = if (isWide) 0 else targetHeight + systemBottomInset + dp(12)
             }
         }
-        // Provider credits remain visible and clickable, in a dedicated line
-        // immediately above the footer. The progress strip sits ABOVE credits,
-        // never over them, regardless of real text height / provider / font scale.
-        val creditMargin = systemBottomInset +
-            if (isWide || mapFullscreen || isChoosingCrosshair) dp(8)
-            else targetHeight + dp(7)
+        // Horizontal margins and widths depend on side rails, but their
+        // VERTICAL position belongs exclusively to updateFloatingOverlayPositions().
+        // It follows the measured animated footer and any selected tower card.
         if (::mapAttribution.isInitialized) {
-            mapAttribution.layoutParams =
-                (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
-                    gravity = Gravity.START or Gravity.BOTTOM
-                    leftMargin = systemLeftInset + dp(8)
-                    rightMargin = systemRightInset + dp(8) + sideWidth
-                    bottomMargin = creditMargin
-                }
+            val lp = mapAttribution.layoutParams as FrameLayout.LayoutParams
+            val newLeft = systemLeftInset + dp(8)
+            val newRight = systemRightInset + dp(8) + sideWidth
+            if (lp.leftMargin != newLeft || lp.rightMargin != newRight) {
+                lp.gravity = Gravity.START or Gravity.BOTTOM
+                lp.leftMargin = newLeft
+                lp.rightMargin = newRight
+                mapAttribution.layoutParams = lp
+            }
         }
         if (::progressStrip.isInitialized) {
             val railVisible = floatingRail.visibility == View.VISIBLE
@@ -2769,20 +2807,17 @@ class MainActivity : Activity(), SensorEventListener {
                 ?: resources.displayMetrics.widthPixels) -
                 systemLeftInset - systemRightInset - sideWidth - dp(24)
             val reserve = if (railVisible || compassInFooter) dp(77) else 0
-            val lift = (railVisible || compassInFooter) &&
-                available - reserve < dp(168)
-            val creditHeight = mapAttribution.height.takeIf { it > 0 } ?: dp(20)
-            val minProgressBottom = creditMargin + creditHeight + dp(9)
-            progressStrip.layoutParams =
-                (progressStrip.layoutParams as FrameLayout.LayoutParams).apply {
-                    gravity = Gravity.BOTTOM
-                    leftMargin = systemLeftInset + dp(12)
-                    rightMargin = systemRightInset + sideWidth + dp(12) +
-                        if (lift) 0 else reserve
-                    bottomMargin = if (lift)
-                        maxOf(minProgressBottom, railBottom + dp(3 * (49 + 8) + 63))
-                    else minProgressBottom
-                }
+            val lift = (railVisible || compassInFooter) && available - reserve < dp(168)
+            val lp = progressStrip.layoutParams as FrameLayout.LayoutParams
+            val newLeft = systemLeftInset + dp(12)
+            val newRight = systemRightInset + sideWidth + dp(12) +
+                if (lift) 0 else reserve
+            if (lp.leftMargin != newLeft || lp.rightMargin != newRight) {
+                lp.gravity = Gravity.BOTTOM
+                lp.leftMargin = newLeft
+                lp.rightMargin = newRight
+                progressStrip.layoutParams = lp
+            }
         }
         if (::details.isInitialized) {
             details.layoutParams = (details.layoutParams as FrameLayout.LayoutParams).apply {
@@ -2795,6 +2830,7 @@ class MainActivity : Activity(), SensorEventListener {
                     else systemBottomInset + targetHeight + dp(15)
             }
         }
+        updateFloatingOverlayPositions(targetHeight)
         if (animate) {
             // MapLibre camera and raster cache are never torn down during rotation.
             // Animate ONLY the overlays; do not fade or reposition the map itself.
@@ -3041,44 +3077,101 @@ class MainActivity : Activity(), SensorEventListener {
         floatingRail.visibility = if (expanded && !landscape) View.GONE else View.VISIBLE
     }
 
+    /**
+     * One live layout pass for map attribution and the loading indicator.
+     * Geometry comes from the CURRENT measured bottom sheet and tower card;
+     * no sticky margins, so shrinking/closing moves both back DOWN.
+     */
+    private fun updateFloatingOverlayPositions(sheetHeightOverride: Int? = null) {
+        if (!::rootView.isInitialized || !::sheetView.isInitialized ||
+            !::mapAttribution.isInitialized || !::progressStrip.isInitialized ||
+            !::details.isInitialized) return
+        val footer = if (!landscape && sheetView.visibility == View.VISIBLE) {
+            val params = sheetView.layoutParams as FrameLayout.LayoutParams
+            params.bottomMargin + (sheetHeightOverride ?: sheetView.height.takeIf { it > 0 }
+                ?: params.height.coerceAtLeast(0))
+        } else 0
+        val cardVisible = details.visibility == View.VISIBLE
+        val card = if (cardVisible) {
+            val lp = details.layoutParams as FrameLayout.LayoutParams
+            lp.bottomMargin + (details.height.takeIf { it > 0 }
+                ?: details.measuredHeight.coerceAtLeast(0))
+        } else 0
+        val creditsHeight = mapAttribution.height.takeIf { it > 0 }
+            ?: mapAttribution.measuredHeight.takeIf { it > 0 } ?: dp(19)
+        val target = FloatingOverlayPolicy.positions(
+            systemBottomInset + dp(2), footer, card, creditsHeight, dp(7), dp(9))
+        val attributionLp = mapAttribution.layoutParams as FrameLayout.LayoutParams
+        if (attributionLp.bottomMargin != target.creditsBottom) {
+            attributionLp.bottomMargin = target.creditsBottom
+            mapAttribution.layoutParams = attributionLp
+        }
+        val progressLp = progressStrip.layoutParams as FrameLayout.LayoutParams
+        val oldBottom = progressLp.bottomMargin
+        if (oldBottom != target.progressBottom) {
+            progressLp.bottomMargin = target.progressBottom
+            progressStrip.layoutParams = progressLp
+        }
+        // When the card disappears, animate the downward return. On opening,
+        // snap ABOVE the card before the first visible frame (never overlap).
+        if (lastTowerCardVisible && !cardVisible && sheetAnimator == null &&
+            !sheetExpanded && !isChoosingCrosshair && !mapFullscreen &&
+            progressRequested && oldBottom > target.progressBottom) {
+            progressStrip.animate().cancel()
+            progressStrip.translationY = -(oldBottom - target.progressBottom).toFloat()
+            progressStrip.animate().translationY(0f).setDuration(190L).start()
+        }
+        lastTowerCardVisible = cardVisible
+
+        // The status header is always above any card. In an unusually small
+        // viewport, don't draw a progress strip on top of controls.
+        val progressHeight = progressStrip.height.takeIf { it > 0 }
+            ?: progressStrip.measuredHeight.takeIf { it > 0 } ?: dp(44)
+        val headerBottom = maxOf(
+            topStatusPanel.bottom.takeIf { it > 0 }
+                ?: (systemTopInset + topPanelHeight),
+            topHeader.bottom.takeIf { it > 0 }
+                ?: (systemTopInset + topPanelHeight + dp(52))
+        ) + dp(5)
+        val tooCrowded = rootView.height > 0 &&
+            rootView.height - target.progressBottom - progressHeight < headerBottom
+        val wanted = when {
+            !progressRequested -> View.GONE
+            tooCrowded -> View.INVISIBLE
+            else -> View.VISIBLE
+        }
+        if (progressStrip.visibility != wanted) progressStrip.visibility = wanted
+    }
+
     private fun updateMapChrome(sheetHeight: Int) {
         if (landscape) {
-            // Attribution and pin cards stay on the map, never under the side drawer.
-            if (::mapAttribution.isInitialized) {
-                mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams)
-                    .apply { bottomMargin = systemBottomInset + dp(7) }
-            }
             if (::details.isInitialized) {
-                details.layoutParams = (details.layoutParams as FrameLayout.LayoutParams)
-                    .apply { bottomMargin = systemBottomInset + dp(8) }
+                val lp = details.layoutParams as FrameLayout.LayoutParams
+                val next = systemBottomInset + dp(8)
+                if (lp.bottomMargin != next) {
+                    lp.bottomMargin = next
+                    details.layoutParams = lp
+                }
             }
+            updateFloatingOverlayPositions()
             return
         }
         val footerMargin = sheetHeight + dp(7) + systemBottomInset
         directionPanel?.let { panel ->
-            panel.layoutParams = (panel.layoutParams as FrameLayout.LayoutParams).apply {
-                bottomMargin = footerMargin + dp(5)
+            val lp = panel.layoutParams as FrameLayout.LayoutParams
+            if (lp.bottomMargin != footerMargin + dp(5)) {
+                lp.bottomMargin = footerMargin + dp(5)
+                panel.layoutParams = lp
             }
-        }
-        if (::mapAttribution.isInitialized) {
-            mapAttribution.layoutParams = (mapAttribution.layoutParams as FrameLayout.LayoutParams).apply {
-                bottomMargin = footerMargin
-            }
-        }
-        if (::progressStrip.isInitialized && progressStrip.visibility == View.VISIBLE &&
-            ::mapAttribution.isInitialized) {
-            val minBottom = footerMargin +
-                (mapAttribution.height.takeIf { it > 0 } ?: dp(20)) + dp(9)
-            progressStrip.layoutParams =
-                (progressStrip.layoutParams as FrameLayout.LayoutParams).apply {
-                    bottomMargin = maxOf(bottomMargin, minBottom)
-                }
         }
         if (::details.isInitialized) {
-            details.layoutParams = (details.layoutParams as FrameLayout.LayoutParams).apply {
-                bottomMargin = footerMargin + dp(8)
+            val lp = details.layoutParams as FrameLayout.LayoutParams
+            if (lp.bottomMargin != footerMargin + dp(8)) {
+                lp.bottomMargin = footerMargin + dp(8)
+                details.layoutParams = lp
             }
         }
+        updateFloatingOverlayPositions(sheetHeight)
     }
 
     private fun updateOperatorChoices() {
@@ -3161,7 +3254,17 @@ class MainActivity : Activity(), SensorEventListener {
         if (old != null && fix.hasAccuracy() && old.hasAccuracy() &&
             fix.accuracy > old.accuracy * 2f &&
             (fix.elapsedRealtimeNanos - old.elapsedRealtimeNanos) < 9000000000L) return
+        val chosenOrigin = selectedOriginPoint
+        val needsReselection = manualPoint == null && selectedAimSite != null && (
+            chosenOrigin == null ||
+                PositionChangePolicy.gpsMovedSinceSelection(
+                    TowerData.distanceKm(chosenOrigin.latitude, chosenOrigin.longitude,
+                        fix.latitude, fix.longitude) * 1000.0,
+                    selectedOriginAccuracy,
+                    fix.accuracy.takeIf { fix.hasAccuracy() })
+            )
         location = fix
+        if (needsReselection) onActivePositionChanged()
         gpsLabel.text = if (fix.hasAccuracy())
             "GPS ±" + fix.accuracy.toInt() + " м"
         else "GPS: точность —"
@@ -3288,7 +3391,9 @@ class MainActivity : Activity(), SensorEventListener {
                 progressLabel.text = label
                 progressBar.isIndeterminate = true
             }
+            progressRequested = true
             progressStrip.visibility = View.VISIBLE
+            updateFloatingOverlayPositions()
         }
     }
 
@@ -3299,10 +3404,14 @@ class MainActivity : Activity(), SensorEventListener {
             progressLabel.text = message
             progressBar.isIndeterminate = false
             progressBar.progress = if (success) 100 else 0
+            progressRequested = true
             progressStrip.visibility = View.VISIBLE
+            updateFloatingOverlayPositions()
             progressHandler.postDelayed({
-                if (progressSequence == ticket && ::progressStrip.isInitialized)
+                if (progressSequence == ticket && ::progressStrip.isInitialized) {
+                    progressRequested = false
                     progressStrip.visibility = View.GONE
+                }
             }, if (success) 3500L else 7000L)
         }
     }
@@ -3727,6 +3836,8 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun clearAimSelection() {
+        selectedOriginPoint = null
+        selectedOriginAccuracy = null
         if (selectedAimSite == null) return
         selectedAimSite = null
         syncYandexObjects()
@@ -3803,23 +3914,32 @@ class MainActivity : Activity(), SensorEventListener {
 
     /** Elevation graph remains fully native, inheriting both Khaki Modern themes. */
     private fun showElevationProfile(site: TowerSite) {
-        val from = location?.takeIf {
-            hasLocation() && System.currentTimeMillis() - it.time in 0L..120000L
-        }
-        if (from == null) {
+        // Manual position is an independent valid DEM origin. GPS is required
+        // only in automatic mode; compass aiming still needs real sensor GPS.
+        val origin = TerrainOriginPolicy.select(
+            manualPoint?.let { it.latitude to it.longitude },
+            aimOrigin()?.let { it.latitude to it.longitude }
+        )
+        if (origin == null) {
             KhakiDialogBuilder(this, palette).setTitle("Профиль высот")
-                .setMessage("Для профиля между вами и вышкой нужна актуальная GPS-позиция. " +
-                    "Включите геолокацию, дождитесь координат и повторите.")
+                .setMessage("Укажите геопозицию вручную или включите GPS и " +
+                    "дождитесь актуальных координат, затем повторно выберите вышку.")
                 .setPositiveButton("Понятно", null).show()
             return
         }
-        val startLat = from.latitude
-        val startLon = from.longitude
+        val manual = origin.manual
+        val originLabel = if (manual) "Ручная точка" else "GPS"
+        val revision = terrainRevision
+        val startLat = origin.latitude
+        val startLon = origin.longitude
         val graph = TerrainProfileView(this, palette).apply {
             background = rounded(palette.elevated, 15)
-            contentDescription = "График высот от вашего GPS до выбранной вышки"
+            originLabelText = if (manual) "ТОЧКА" else "ВЫ"
+            contentDescription = "График высот: " + originLabel +
+                " до выбранной вышки"
         }
-        val header = text("Получаем данные о высоте местности…", 13f, palette.text)
+        val header = text(originLabel + " → вышка · получаем высоты…",
+            13f, palette.text)
         val detailsLine = text("Проведите пальцем по графику для просмотра высот",
             12f, palette.secondary)
         graph.onInspect = { detailsLine.text = it }
@@ -3844,6 +3964,10 @@ class MainActivity : Activity(), SensorEventListener {
             .setTitle("Профиль высот · TowerRadar")
             .setView(content)
             .setPositiveButton("Готово", null).show()
+        terrainDialog = dialog
+        dialog.setOnDismissListener {
+            if (terrainDialog === dialog) terrainDialog = null
+        }
         val key = getPreferences(Context.MODE_PRIVATE).getString(
             "map_key_maptiler", "").orEmpty()
         apiExecutor.execute {
@@ -3854,7 +3978,9 @@ class MainActivity : Activity(), SensorEventListener {
                 null to (e.message ?: "Высоты временно недоступны")
             }
             runOnUiThread {
-                if (!dialog.isShowing || isDestroyed || isFinishing) return@runOnUiThread
+                if (revision != terrainRevision || !dialog.isShowing ||
+                    selectedAimSite?.id != site.id ||
+                    isDestroyed || isFinishing) return@runOnUiThread
                 val terrain = outcome.first
                 if (terrain == null) {
                     header.text = outcome.second
@@ -3869,7 +3995,7 @@ class MainActivity : Activity(), SensorEventListener {
                 val b = last?.let { kotlin.math.round(it).toInt().toString() + " м" } ?: "н/д"
                 val diff = if (first == null || last == null) "н/д"
                     else String.format(Locale.US, "%+.0f м", last - first)
-                header.text = "Вы: " + a + "   ·   Вышка: " + b +
+                header.text = originLabel + ": " + a + "   ·   Вышка: " + b +
                     "\nПерепад: " + diff
                 detailsLine.text = "Коснитесь линии рельефа для просмотра высоты"
                 val mast = site.height?.trim()?.replace(',', '.')?.let {
@@ -3946,6 +4072,11 @@ class MainActivity : Activity(), SensorEventListener {
             return
         }
         selectedAimSite = nearest
+        selectedOriginPoint = manualPoint ?: aimOrigin()?.let {
+            LatLng(it.latitude, it.longitude)
+        }
+        selectedOriginAccuracy = if (manualPoint == null)
+            location?.takeIf { it.hasAccuracy() }?.accuracy else null
         syncYandexObjects()
         aimAligned = false
         aimAlignmentInitialized = false

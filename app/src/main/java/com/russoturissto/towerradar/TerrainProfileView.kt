@@ -17,6 +17,8 @@ class TerrainProfileView(context: Context, private val colors: KhakiPalette) : V
     var profile: TerrainProfile? = null
         set(value) { field = value; selectedIndex = -1; invalidate() }
     var onInspect: ((String) -> Unit)? = null
+    var originLabelText: String = "ВЫ"
+        set(value) { field = value; invalidate() }
     var towerHeightMeters: Double? = null
         set(value) { field = value; invalidate() }
     private var selectedIndex = -1
@@ -109,7 +111,7 @@ class TerrainProfileView(context: Context, private val colors: KhakiPalette) : V
             canvas.drawLine(left, yOf(first + 1.5), right, yOf(last + towerHeightMeters!!), pen)
             pen.pathEffect = null
         }
-        print(canvas, "ВЫ", left, bottom + dp(20f), 10f, colors.text)
+        print(canvas, originLabelText, left, bottom + dp(20f), 10f, colors.text)
         val totalKm = String.format(Locale.US, "%.2f", terrain.distanceKm)
         print(canvas, "ВЫШКА · " + totalKm + " км", right, bottom + dp(20f),
             10f, colors.text, Paint.Align.RIGHT)
