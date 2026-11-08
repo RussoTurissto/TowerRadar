@@ -2394,6 +2394,11 @@ class MainActivity : Activity(), SensorEventListener {
                 dp(170).coerceAtMost(maxHeight), maxHeight
             ) else dp(84)
             val old = sheetView.layoutParams.height
+            applyResponsiveLayout(false) // update buttons, bounds and active theme first
+            sheetView.layoutParams = (sheetView.layoutParams as FrameLayout.LayoutParams).apply {
+                height = old
+            }
+            updateMapChrome(old)
             val animation = ValueAnimator.ofInt(old, target)
             sheetAnimator = animation
             animation.duration = 210L
@@ -2406,7 +2411,6 @@ class MainActivity : Activity(), SensorEventListener {
                 updateMapChrome(height)
             }
             animation.start()
-            applyResponsiveLayout(false)
         }
         floatingRail.visibility = if (expanded && !landscape) View.GONE else View.VISIBLE
     }
