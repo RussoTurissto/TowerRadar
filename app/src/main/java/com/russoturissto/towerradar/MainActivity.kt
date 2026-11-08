@@ -7,6 +7,9 @@ import android.animation.ValueAnimator
 import android.content.ClipboardManager
 import android.view.MotionEvent
 import android.view.WindowInsets
+import android.view.Surface
+import android.view.ViewGroup
+import org.maplibre.android.camera.CameraPosition
 import kotlin.math.pow
 import android.widget.ScrollView
 import android.widget.Toast
@@ -102,6 +105,13 @@ class MainActivity : Activity(), SensorEventListener {
     private var systemBottomInset = 0
     private var beamBrightness = 85
     private var sectorBrightness = 35
+    private var sectorLengthPercent = 30
+    private var lastCameraSaveAt = 0L
+    private var restoredLastCamera = false
+    private var systemLeftInset = 0
+    private var systemRightInset = 0
+    private var sheetAnimator: ValueAnimator? = null
+    private val landscape: Boolean get() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     private var pendingEncryptedBackup: ByteArray? = null
     private val apiChecks = mutableMapOf<String, ApiProbe>()
     private val checkingApi = mutableSetOf<String>()
@@ -195,21 +205,32 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
         val rotation = FloatArray(9)
+        val adjusted = FloatArray(9)
         val orientation = FloatArray(3)
         SensorManager.getRotationMatrixFromVector(rotation, event.values)
-        SensorManager.getOrientation(rotation, orientation)
+        val axes = when (windowManager.defaultDisplay.rotation) {
+            Surface.ROTATION_90 -> SensorManager.AXIS_Y to SensorManager.AXIS_MINUS_X
+            Surface.ROTATION_180 -> SensorManager.AXIS_MINUS_X to SensorManager.AXIS_MINUS_Y
+            Surface.ROTATION_270 -> SensorManager.AXIS_MINUS_Y to SensorManager.AXIS_X
+            else -> SensorManager.AXIS_X to SensorManager.AXIS_Y
+        }
+        if (SensorManager.remapCoordinateSystem(rotation, axes.first, axes.second, adjusted)) {
+            SensorManager.getOrientation(adjusted, orientation)
+        } else SensorManager.getOrientation(rotation, orientation)
         val point = location
         val declination = if (point == null) 0f else GeomagneticField(
             point.latitude.toFloat(), point.longitude.toFloat(),
             point.altitude.toFloat(), System.currentTimeMillis()).declination
         val degrees = ((Math.toDegrees(orientation[0].toDouble()).toFloat() + declination) % 360f + 360f) % 360f
         val diff = kotlin.math.abs((degrees - headingDegrees + 540f) % 360f - 180f)
-        if (diff < 4f && headingView.text.toString() != "➤ —°") return
-        headingDegrees = degrees
+        if (diff < 0.7f && headingView.text.toString() != "➤ —°") return
+        // Shortest-arc smoothing reduces sensor jitter without lagging a real turn.
+        headingDegrees = if (headingView.text.toString() == "➤ —°") degrees
+            else (headingDegrees + ((degrees - headingDegrees + 540f) % 360f - 180f) * 0.45f + 360f) % 360f
         if (::headingView.isInitialized) {
             val directions = arrayOf("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
-            val direction = directions[((degrees + 22.5f).toInt() / 45) % 8]
-            headingView.text = "➤ " + degrees.toInt() + "° " + direction
+            val direction = directions[((headingDegrees + 22.5f).toInt() / 45) % 8]
+            headingView.text = "➤ " + headingDegrees.toInt() + "° " + direction
         }
         updateOverlays()
 
@@ -226,6 +247,8 @@ class MainActivity : Activity(), SensorEventListener {
         lastGoogleAttributionAt = 0L
         styled = false
         providerIndex = MapSources.providers.indexOf(provider).coerceAtLeast(0)
+        getPreferences(Context.MODE_PRIVATE).edit()
+            .putString("map_last_resolved", provider.id).apply()
         if (::mapStatus.isInitialized) mapStatus.text = "Подложка: " + provider.name
         if (::mapAttribution.isInitialized) mapAttribution.text =
             if (provider.id.startsWith("google-"))
@@ -451,10 +474,9 @@ class MainActivity : Activity(), SensorEventListener {
                     applyBasemap(provider, key, test.session)
                     mapStatus.text = "✓ " + provider.name + " · подключено"
                 } else {
-                    mapStatus.text = test.message + " · переключаемся на OSM"
-                    getPreferences(Context.MODE_PRIVATE).edit()
-                        .putString("map_provider", "auto").apply()
-                    chooseBasemap()
+                    // Failed verification must not delete the user's saved source.
+                    // Cached tiles might still be useful without internet access.
+                    mapStatus.text = test.message + " · выбор карты сохранён"
                 }
             }
         }
@@ -899,6 +921,12 @@ class MainActivity : Activity(), SensorEventListener {
         sliderRow("Сектор", sectorBrightness) {
             sectorBrightness = it
             getPreferences(Context.MODE_PRIVATE).edit().putInt("sector_brightness", it).apply()
+        }
+        sliderRow("Длина сектора", sectorLengthPercent) {
+            sectorLengthPercent = it.coerceIn(10, 70)
+            getPreferences(Context.MODE_PRIVATE).edit()
+                .putInt("sector_length", sectorLengthPercent).apply()
+            updateOverlays()
         }
         val finish = row().apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
         panel.addView(finish, LinearLayout.LayoutParams(-1, dp(35)).apply {
@@ -1509,6 +1537,7 @@ class MainActivity : Activity(), SensorEventListener {
         showCone = prefs.getBoolean("show_cone", true)
         beamBrightness = prefs.getInt("beam_brightness", 85).coerceIn(0, 100)
         sectorBrightness = prefs.getInt("sector_brightness", 35).coerceIn(0, 100)
+        sectorLengthPercent = prefs.getInt("sector_length", 30).coerceIn(10, 70)
         MapLibre.getInstance(this)
         mapTileCache = MapTileCache(this)
         mapTileCache.initialize()
@@ -1529,16 +1558,40 @@ class MainActivity : Activity(), SensorEventListener {
         mapView.onCreate(state)
         mapView.getMapAsync { ready ->
             map = ready
-            // Replace MapLibre's circular compass with our independent N + pointer.
+            // Restore camera BEFORE loading any style to avoid OSM/world-map flashes.
             ready.uiSettings.isCompassEnabled = false
+            val storedCamera = readLastCamera()
+            if (storedCamera != null) {
+                ready.moveCamera(CameraUpdateFactory.newCameraPosition(storedCamera))
+                initiallyCentered = true // GPS updates must not steal a saved view.
+                restoredLastCamera = true
+            } else {
+                ready.moveCamera(CameraUpdateFactory.newLatLngZoom(
+                    center ?: LatLng(20.0, 0.0), if (center == null) 2.5 else 12.5))
+            }
             northIndicator.setMapBearing(ready.cameraPosition.bearing)
-            ready.moveCamera(CameraUpdateFactory.newLatLngZoom(
-                center ?: LatLng(20.0, 0.0), if (center == null) 2.5 else 12.5))
-            applyBasemap(MapSources.providers[0])
-            val savedId = getPreferences(Context.MODE_PRIVATE)
-                .getString("map_provider", "auto") ?: "auto"
-            val saved = MapSources.providers.firstOrNull { it.id == savedId }
-            if (saved == null) chooseBasemap() else useMapChoice(saved)
+            // Never temporarily replace an explicitly selected map with OSM.
+            val savedId = prefs.getString("map_provider", "auto") ?: "auto"
+            val preferredId = if (savedId == "auto")
+                prefs.getString("map_last_resolved", null) ?: "osmfr" else savedId
+            val saved = MapSources.providers.firstOrNull { it.id == preferredId }
+            when {
+                saved == null -> { applyBasemap(MapSources.providers[0]); chooseBasemap() }
+                saved.keyPref == null -> applyBasemap(saved)
+                saved.id == "yandex" || saved.id == "2gis" -> {
+                    val key = prefs.getString(saved.keyPref, "").orEmpty()
+                    if (key.isNotBlank()) {
+                        applyBasemap(saved, key)
+                        // Validation is informative only; it MUST NOT overwrite user's
+                        // saved choice on a transient connectivity/API failure.
+                        verifyConnection(saved.keyPref)
+                    } else {
+                        mapStatus.text = "Для сохранённой карты нужен API-ключ"
+                        applyBasemap(MapSources.providers[0])
+                    }
+                }
+                else -> useMapChoice(saved) // Google requires a fresh session token.
+            }
             ready.addOnMapClickListener { tapped ->
                 if (isChoosingCrosshair) {
                     ready.animateCamera(CameraUpdateFactory.newLatLng(tapped), 250)
@@ -1553,6 +1606,7 @@ class MainActivity : Activity(), SensorEventListener {
                 northIndicator.setMapBearing(ready.cameraPosition.bearing)
             }
             ready.addOnCameraIdleListener {
+                persistLastCamera(force = true)
                 updateOverlays()
                 if (isChoosingCrosshair) updateCrosshairCoordinates()
                 northIndicator.setMapBearing(ready.cameraPosition.bearing)
@@ -1565,6 +1619,40 @@ class MainActivity : Activity(), SensorEventListener {
         }
         askLocation()
         verifySavedConnections(skipActive = true)
+    }
+
+    /** Viewing position and search/GPS origin are intentionally independent. */
+    private fun readLastCamera(): CameraPosition? {
+        val prefs = getPreferences(Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("last_camera_valid", false)) return null
+        val lat = prefs.getString("last_camera_lat", null)?.toDoubleOrNull()
+        val lon = prefs.getString("last_camera_lon", null)?.toDoubleOrNull()
+        val zoom = prefs.getString("last_camera_zoom", null)?.toDoubleOrNull()
+        val bearing = prefs.getString("last_camera_bearing", null)?.toDoubleOrNull() ?: 0.0
+        val tilt = prefs.getString("last_camera_tilt", null)?.toDoubleOrNull() ?: 0.0
+        if (lat == null || lon == null || zoom == null ||
+            !LastMapCameraModel.valid(lat, lon, zoom, bearing, tilt)) return null
+        return CameraPosition.Builder()
+            .target(LatLng(lat, lon)).zoom(zoom).bearing(bearing).tilt(tilt).build()
+    }
+
+    private fun persistLastCamera(force: Boolean = false) {
+        val camera = map?.cameraPosition ?: return
+        val now = SystemClock.elapsedRealtime()
+        if (!force && now - lastCameraSaveAt < 700L) return
+        lastCameraSaveAt = now
+        val p = camera.target
+        if (!LastMapCameraModel.valid(p.latitude, p.longitude,
+                camera.zoom, camera.bearing, camera.tilt)) return
+        // A confirmed write in onStop/onPause survives system-initiated process death.
+        getPreferences(Context.MODE_PRIVATE).edit()
+            .putBoolean("last_camera_valid", true)
+            .putString("last_camera_lat", p.latitude.toString())
+            .putString("last_camera_lon", p.longitude.toString())
+            .putString("last_camera_zoom", camera.zoom.toString())
+            .putString("last_camera_bearing", camera.bearing.toString())
+            .putString("last_camera_tilt", camera.tilt.toString())
+            .apply()
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
@@ -2592,21 +2680,23 @@ class MainActivity : Activity(), SensorEventListener {
                 cos(Math.toRadians(point.latitude)).coerceAtLeast(0.01) /
                 2.0.pow(map?.cameraPosition?.zoom ?: 13.0)
             val shortestSide = kotlin.math.min(mapView.width, mapView.height)
-                .coerceAtLeast(dp(250)).toDouble()
-            val px = kotlin.math.min(dp(122).toDouble(), shortestSide * .22)
-            val length = (scaleMetersPerPixel * px).coerceIn(12.0, 250000.0)
+                .coerceAtLeast(dp(240)).toDouble()
+            // Long dashed bearing line, independently shortened translucent fan.
+            val rayPx = kotlin.math.min(dp(380).toDouble(), shortestSide * .43)
+            val rayLength = (scaleMetersPerPixel * rayPx).coerceIn(20.0, 250000.0)
+            val sectorLength = rayLength * sectorLengthPercent / 100.0
             val origin = Point.fromLngLat(point.longitude, point.latitude)
             val angles = (-23..23 step 2).map { headingDegrees.toDouble() + it }
             val arc = angles.map {
-                geoPoint(point.latitude, point.longitude, length, it)
+                geoPoint(point.latitude, point.longitude, sectorLength, it)
             }
             val fan = listOf(origin) + arc + origin
             val nearArc = angles.map {
-                geoPoint(point.latitude, point.longitude, length * 0.48, it)
+                geoPoint(point.latitude, point.longitude, sectorLength * 0.48, it)
             }
             val nearFan = listOf(origin) + nearArc + origin
             val ray = listOf(origin, geoPoint(point.latitude, point.longitude,
-                length * 0.98, headingDegrees.toDouble()))
+                rayLength, headingDegrees.toDouble()))
             (map?.style?.getSource("heading-cone") as? GeoJsonSource)?.setGeoJson(
                 FeatureCollection.fromFeatures(arrayOf(
                     Feature.fromGeometry(Polygon.fromLngLats(listOf(fan)))
@@ -2720,7 +2810,7 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             }
         }
-        headingSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        headingSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         if (hasLocation()) startLocationUpdates()
         if (cellMonitor.hasSignalPermission()) {
             cellMonitor.start(getPreferences(Context.MODE_PRIVATE).getInt("sim_id", -1))
@@ -2735,6 +2825,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
     override fun onPause() {
+        persistLastCamera(force = true)
         sensorManager.unregisterListener(this)
         cellMonitor.stop()
         locationFusion.stop()
@@ -2742,6 +2833,7 @@ class MainActivity : Activity(), SensorEventListener {
         super.onPause()
     }
     override fun onStop() {
+        persistLastCamera(force = true)
         if (listening) {
             locationManager.removeUpdates(listener)
             listening = false
@@ -2753,6 +2845,7 @@ class MainActivity : Activity(), SensorEventListener {
     }
     override fun onLowMemory() { super.onLowMemory(); mapView.onLowMemory() }
     override fun onSaveInstanceState(outState: Bundle) {
+        persistLastCamera(force = true)
         super.onSaveInstanceState(outState)
         mapView.onSaveInstanceState(outState)
     }
