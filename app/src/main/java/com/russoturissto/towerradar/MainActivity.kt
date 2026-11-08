@@ -167,6 +167,8 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
     private var headingSensor: Sensor? = null
     private var headingDegrees = 0f
+    private var lastHeadingOverlay = Float.NaN
+    private var lastHeadingOverlayAt = 0L
     private var providerIndex = 0
     private var choosingMap = false
     private lateinit var details: LinearLayout
@@ -227,13 +229,21 @@ class MainActivity : Activity(), SensorEventListener {
         // Shortest-arc smoothing reduces sensor jitter without lagging a real turn.
         headingDegrees = if (headingView.text.toString() == "➤ —°") degrees
             else (headingDegrees + ((degrees - headingDegrees + 540f) % 360f - 180f) * 0.45f + 360f) % 360f
+        if (::northIndicator.isInitialized) northIndicator.setCompassHeading(headingDegrees)
         if (::headingView.isInitialized) {
             val directions = arrayOf("С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ")
             val direction = directions[((headingDegrees + 22.5f).toInt() / 45) % 8]
             headingView.text = "➤ " + headingDegrees.toInt() + "° " + direction
         }
-        updateOverlays()
-
+        // Rendering several GeoJSON layers on every sensor event causes jitter.
+        val now = SystemClock.elapsedRealtime()
+        val delta = if (lastHeadingOverlay.isNaN()) 360f
+            else kotlin.math.abs((headingDegrees - lastHeadingOverlay + 540f) % 360f - 180f)
+        if (delta >= 1.5f && now - lastHeadingOverlayAt >= 85L) {
+            lastHeadingOverlayAt = now
+            lastHeadingOverlay = headingDegrees
+            updateOverlays()
+        }
     }
 
     private fun applyBasemap(provider: MapProvider, key: String = "",
@@ -1759,9 +1769,15 @@ class MainActivity : Activity(), SensorEventListener {
         // Only the letter N and a slim arrow are painted. No background,
         // compass disk or visible guide circle. Place it above the right rail.
         northIndicator = NorthIndicatorView(this, palette.dark).apply {
-            contentDescription = "Направление севера на карте"
-            isClickable = false
+            contentDescription = "Направление севера"
+            isClickable = true
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            setOnClickListener {
+                val phone = toggleSource()
+                Toast.makeText(this@MainActivity,
+                    if (phone) "Север по датчику телефона" else "Север относительно карты",
+                    Toast.LENGTH_SHORT).show()
+            }
         }
         rootView.addView(northIndicator, FrameLayout.LayoutParams(
             dp(53), dp(60), Gravity.END or Gravity.BOTTOM
