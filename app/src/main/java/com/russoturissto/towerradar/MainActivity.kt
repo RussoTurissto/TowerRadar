@@ -1646,7 +1646,7 @@ class MainActivity : Activity(), SensorEventListener {
         val now = SystemClock.elapsedRealtime()
         if (!force && now - lastCameraSaveAt < 700L) return
         lastCameraSaveAt = now
-        val p = camera.target
+        val p = camera.target ?: return
         if (!LastMapCameraModel.valid(p.latitude, p.longitude,
                 camera.zoom, camera.bearing, camera.tilt)) return
         // A confirmed write in onStop/onPause survives system-initiated process death.
