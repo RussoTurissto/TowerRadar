@@ -2480,14 +2480,14 @@ class MainActivity : Activity(), SensorEventListener {
         topStatusPanel.layoutParams =
             (topStatusPanel.layoutParams as FrameLayout.LayoutParams).apply {
                 gravity = Gravity.TOP
-                width = ViewGroup.LayoutParams.MATCH_PARENT
+                this.width = ViewGroup.LayoutParams.MATCH_PARENT
                 this.height = height
                 leftMargin = 0; rightMargin = 0
                 topMargin = topInset
             }
         statusBarProtection.layoutParams =
             (statusBarProtection.layoutParams as FrameLayout.LayoutParams).apply {
-                width = ViewGroup.LayoutParams.MATCH_PARENT
+                this.width = ViewGroup.LayoutParams.MATCH_PARENT
                 this.height = systemTopInset
                 topMargin = 0
             }
