@@ -27,6 +27,14 @@ class ChangeLogTest {
         assertTrue(notes.contains("текстом и значком"))
         assertTrue(notes.contains("не вызывают копирование"))
     }
+    @Test fun nextReleaseDocumentsCacheOptionsAndMapSelection() {
+        val notes = ChangeLog.forVersion("0.27.4")
+        assertTrue(notes.contains("500 МБ"))
+        assertTrue(notes.contains("Без ограничений"))
+        assertTrue(notes.contains("Яндекс"))
+        assertTrue(notes.contains("любй") || notes.contains("любой"))
+        assertTrue(notes.contains("не скачивает"))
+    }
     @Test fun unknownVersionIsHonest() {
         assertFalse(ChangeLog.forVersion("9.99.0").contains("30 км"))
     }

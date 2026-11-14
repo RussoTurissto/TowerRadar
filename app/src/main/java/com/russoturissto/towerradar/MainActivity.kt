@@ -1470,7 +1470,7 @@ class MainActivity : Activity(), SensorEventListener {
     /** The first-install guide is distinct from the changelog on real OTA upgrades. */
     private fun showStartupInformation() {
         val preferences = getPreferences(Context.MODE_PRIVATE)
-        val current = 30
+        val current = 31
         val previous = preferences.getInt("startup_seen_version", 0)
         if (previous == current) {
             checkReleaseOnLaunch()
@@ -1525,8 +1525,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun showWhatsNew(afterClose: (() -> Unit)? = null) {
         KhakiDialogBuilder(this, palette)
-            .setTitle("Что нового в TowerRadar · 0.27.3")
-            .setMessage(ChangeLog.forVersion("0.27.3"))
+            .setTitle("Что нового в TowerRadar · 0.27.4")
+            .setMessage(ChangeLog.forVersion("0.27.4"))
             .setPositiveButton("Понятно") { _, _ -> afterClose?.invoke() }
             .show()
     }
@@ -1776,8 +1776,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun currentVersionName(): String = try {
         @Suppress("DEPRECATION")
-        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.27.3")
-    } catch (_: Exception) { "0.27.3" }
+        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.27.4")
+    } catch (_: Exception) { "0.27.4" }
 
     private fun openExternal(url: String) {
         try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
