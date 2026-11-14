@@ -144,6 +144,11 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var expandedSignalRow: LinearLayout
     private lateinit var compactHandleRow: FrameLayout
     private lateinit var floatingRail: LinearLayout
+    private lateinit var actionHeightRow: LinearLayout
+    private lateinit var actionTowerRow: LinearLayout
+    private lateinit var actionExpandButton: Button
+    private var actionMenuExpanded = false
+    private var gpsFocusPending = false
     private lateinit var fullScreenButton: Button
     private var sheetExpanded = false
     private var mapFullscreen = false
@@ -551,7 +556,7 @@ class MainActivity : Activity(), SensorEventListener {
                         updateCrosshairCoordinates()
                     } else selectTower(point)
                 },
-                onLongTap = { lat, lon -> showElevationAtPoint(LatLng(lat, lon)) },
+                onLongTap = { _, _ -> Unit },
                 onError = { message ->
                     if (::mapStatus.isInitialized) mapStatus.text = message
                     Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
@@ -2676,10 +2681,6 @@ class MainActivity : Activity(), SensorEventListener {
                 }
                 else -> useMapChoice(saved) // Google requires a fresh session token.
             }
-            ready.addOnMapLongClickListener { tapped ->
-                showElevationAtPoint(tapped)
-                true
-            }
             ready.addOnMapClickListener { tapped ->
                 if (isChoosingCrosshair) {
                     ready.animateCamera(CameraUpdateFactory.newLatLng(tapped), 250)
@@ -2876,31 +2877,70 @@ class MainActivity : Activity(), SensorEventListener {
                 bottomMargin = dp(8)
             })
         }
+        // Legacy fields remain initialized for non-rail search/status handlers.
         gpsRefresh = styledButton("⌖", 22f)
-        railButton(gpsRefresh, "Уточнить GPS")
-        gpsRefresh.setOnClickListener {
-            if (!manualCenter) {
+        searchHere = styledButton("⌕", 22f)
+        fun railAction(label: String, kind: MapQuickActionIcon.Kind,
+                       selected: () -> Unit): LinearLayout {
+            val line = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL or Gravity.END
+                visibility = View.GONE
+                isClickable = true
+                isFocusable = true
+                contentDescription = label
+                setOnClickListener { setActionMenuExpanded(false); selected() }
+            }
+            line.addView(text(label, 13.5f, palette.text).apply {
+                background = rounded(palette.surface, 18)
+                setPadding(dp(14), dp(9), dp(14), dp(9))
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                gravity = Gravity.CENTER
+                elevation = dp(3).toFloat()
+            })
+            val iconPlate = FrameLayout(this).apply {
+                background = rounded(palette.accentSoft, 24)
+                elevation = dp(5).toFloat()
+            }
+            iconPlate.addView(MapQuickActionIcon(this, kind, palette.text),
+                FrameLayout.LayoutParams(dp(31), dp(31), Gravity.CENTER))
+            line.addView(iconPlate, LinearLayout.LayoutParams(dp(49), dp(49)).apply {
+                marginStart = dp(9)
+            })
+            floatingRail.addView(line, LinearLayout.LayoutParams(-2, dp(49)).apply {
+                bottomMargin = dp(8)
+                gravity = Gravity.END
+            })
+            return line
+        }
+        actionHeightRow = railAction("Высота", MapQuickActionIcon.Kind.HEIGHT) {
+            map?.cameraPosition?.target?.let(::showElevationAtPoint)
+        }
+        actionTowerRow = railAction("Добавить вышку", MapQuickActionIcon.Kind.TOWER) {
+            showAddUserTower()
+        }
+        actionExpandButton = styledButton("+", 25f).apply {
+            background = rounded(palette.surface, 16)
+        }
+        railButton(actionExpandButton, "Открыть меню действий")
+        actionExpandButton.setOnClickListener { setActionMenuExpanded(!actionMenuExpanded) }
+        locate = styledButton("◎", 24f, true)
+        railButton(locate, "Уточнить GPS и приблизить карту")
+        locate.setOnClickListener {
+            setActionMenuExpanded(false)
+            gpsFocusPending = true
+            useAutomaticPosition()
+            if (hasLocation()) {
                 startLocationUpdates()
                 locationFusion.refresh()
-                status.text = "Уточняем местоположение через GPS и Wi-Fi…"
-                Toast.makeText(this, "Уточняем GPS и Wi-Fi", Toast.LENGTH_SHORT).show()
-            } else showPositionOptions()
-        }
-        searchHere = styledButton("⌕", 22f)
-        railButton(searchHere, "Искать вышки в центре карты")
-        searchHere.setOnClickListener {
-            map?.cameraPosition?.target?.let {
-                center = it
-                manualCenter = true
-                lastFetch = null
-                expandSheet(false)
-                load(force = true)
-                Toast.makeText(this, "Ищем вышки в центре карты", Toast.LENGTH_SHORT).show()
+            }
+            val point = location?.let { LatLng(it.latitude, it.longitude) }
+            if (point != null) {
+                gpsFocusPending = false
+                map?.animateCamera(CameraUpdateFactory.newLatLngZoom(point, 15.5), 500)
+                yandexWebMap?.move(point.latitude, point.longitude, 15.5)
             }
         }
-        locate = styledButton("◎", 24f, true)
-        railButton(locate, "Вернуться к автоматическому GPS")
-        locate.setOnClickListener { useAutomaticPosition() }
         locate.setOnLongClickListener { showPositionOptions(); true }
 
         // A slim 50dp collapsed sheet: only true signal bars at lower left and
@@ -3541,6 +3581,12 @@ class MainActivity : Activity(), SensorEventListener {
         }
         floatingRail.visibility = if (mapFullscreen || isChoosingCrosshair ||
             (sheetExpanded && !isWide)) View.GONE else View.VISIBLE
+        if ((mapFullscreen || isChoosingCrosshair || sheetExpanded) && actionMenuExpanded) {
+            actionMenuExpanded = false
+            actionHeightRow.visibility = View.GONE
+            actionTowerRow.visibility = View.GONE
+            actionExpandButton.text = "+"
+        }
         // A consistent baseline keeps all three buttons directly above the
         // collapsed sheet. The compass sits immediately above the whole rail.
         val sheetIsVisible = !mapFullscreen && !isChoosingCrosshair
@@ -3563,7 +3609,7 @@ class MainActivity : Activity(), SensorEventListener {
                 // lower-right SAFE screen corner, above gesture navigation.
                 bottomMargin = if (mapFullscreen)
                     systemBottomInset + dp(7)
-                else railBottom + dp(3 * (49 + 8) + 5)
+                else railBottom + dp((if (actionMenuExpanded) 4 else 2) * (49 + 8) + 5)
             }
         crosshairControls.layoutParams =
             (crosshairControls.layoutParams as FrameLayout.LayoutParams).apply {
@@ -3679,6 +3725,17 @@ class MainActivity : Activity(), SensorEventListener {
         applyResponsiveLayout(false)
         Toast.makeText(this, "Перемещайте карту или коснитесь нужной точки",
             Toast.LENGTH_SHORT).show()
+    }
+
+    private fun setActionMenuExpanded(expanded: Boolean) {
+        if (!::actionHeightRow.isInitialized) return
+        actionMenuExpanded = expanded
+        actionHeightRow.visibility = if (expanded) View.VISIBLE else View.GONE
+        actionTowerRow.visibility = if (expanded) View.VISIBLE else View.GONE
+        actionExpandButton.text = if (expanded) "×" else "+"
+        actionExpandButton.contentDescription =
+            if (expanded) "Закрыть меню действий" else "Открыть меню действий"
+        applyResponsiveLayout(false)
     }
 
     private fun updateMapCenterCoordinates() {
@@ -3882,6 +3939,7 @@ class MainActivity : Activity(), SensorEventListener {
             animation.start()
         }
         floatingRail.visibility = if (expanded && !landscape) View.GONE else View.VISIBLE
+        if (expanded && actionMenuExpanded) setActionMenuExpanded(false)
     }
 
     /**
@@ -4073,6 +4131,12 @@ class MainActivity : Activity(), SensorEventListener {
             )
         location = fix
         if (needsReselection) onActivePositionChanged()
+        if (gpsFocusPending && !manualCenter) {
+            gpsFocusPending = false
+            val point = LatLng(fix.latitude, fix.longitude)
+            map?.animateCamera(CameraUpdateFactory.newLatLngZoom(point, 15.5), 500)
+            yandexWebMap?.move(point.latitude, point.longitude, 15.5)
+        }
         gpsLabel.text = if (fix.hasAccuracy())
             "GPS ±" + fix.accuracy.toInt() + " м"
         else "GPS: точность —"
@@ -4946,7 +5010,7 @@ class MainActivity : Activity(), SensorEventListener {
             .setView(content).setPositiveButton("Закрыть", null).show()
     }
 
-    /** Long-press on either map shows altitude for the exact selected point. */
+    /** Menu action queries altitude at the fixed map-center reticle. */
     private fun showElevationAtPoint(point: LatLng) {
         val loading = pointAltitudeDialog(point, "Запрашиваем высоту рельефа над уровнем моря…")
         val key = getPreferences(Context.MODE_PRIVATE)
