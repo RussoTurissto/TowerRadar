@@ -141,8 +141,8 @@ class OfflineTerrainStore(private val context: Context) {
                     val px = floor((gx - x) * bitmap.width).toInt().coerceIn(0, bitmap.width - 1)
                     val py = floor((gy - y) * bitmap.height).toInt().coerceIn(0, bitmap.height - 1)
                     val color = bitmap.getPixel(px, py)
-                    val elevation = ((color shr 16) and 255) * 256.0 +
-                        ((color shr 8) and 255) + (color and 255) / 256.0 - 32768.0
+                    val elevation = TerrariumEncoding.elevation(color)
+                        ?: error("Данные высот отсутствуют в тайле $key")
                     TerrainSample(lat, lon, elevation)
                 }
                 return TerrainProfile(samples, TowerData.distanceKm(aLat, aLon, bLat, bLon),
