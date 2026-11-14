@@ -1153,6 +1153,70 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    /** The first-install guide is distinct from the changelog on real OTA upgrades. */
+    private fun showStartupInformation() {
+        val preferences = getPreferences(Context.MODE_PRIVATE)
+        val current = 27
+        val previous = preferences.getInt("startup_seen_version", 0)
+        if (previous == current) {
+            checkReleaseOnLaunch()
+            return
+        }
+        @Suppress("DEPRECATION")
+        val info = try { packageManager.getPackageInfo(packageName, 0) }
+            catch (_: Exception) { null }
+        val isUpgrade = previous > 0 ||
+            (info != null && info.lastUpdateTime - info.firstInstallTime > 30000L)
+        if (!isUpgrade && !preferences.getBoolean("api_welcome_seen", false)) {
+            showFirstRunApiGuide {
+                preferences.edit().putBoolean("api_welcome_seen", true)
+                    .putInt("startup_seen_version", current).apply()
+                checkReleaseOnLaunch()
+            }
+        } else {
+            preferences.edit().putInt("startup_seen_version", current).apply()
+            if (isUpgrade) showWhatsNew { checkReleaseOnLaunch() }
+            else checkReleaseOnLaunch()
+        }
+    }
+
+    private fun showFirstRunApiGuide(done: () -> Unit) {
+        val labels = arrayOf(
+            "Яндекс Tiles API · обычная карта",
+            "Яндекс JavaScript API · спутник / гибрид",
+            "MapTiler API · карты, спутник и высоты",
+            "OpenCellID · дополнительные сведения о сотах")
+        val links = arrayOf(
+            "https://developer.tech.yandex.ru/",
+            "https://yandex.ru/dev/jsapi-v2-1/doc/ru/",
+            "https://cloud.maptiler.com/",
+            "https://opencellid.org/")
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Добро пожаловать в TowerRadar")
+            .setMessage("Для более комфортной работы можно получить личные API-ключи. " +
+                "Они НЕ обязательны: открытые карты и основные функции доступны без них. " +
+                "У каждого сервиса могут быть тарифы и ограничения.\n\n" +
+                "Нажмите название, чтобы открыть официальный сайт получения ключа.")
+            .setItems(labels) { _, n ->
+                done()
+                openExternal(links[n])
+            }
+            .setPositiveButton("Настроить ключи") { _, _ ->
+                done()
+                showConnections()
+            }
+            .setNegativeButton("Продолжить без ключей") { _, _ -> done() }
+            .show()
+    }
+
+    private fun showWhatsNew(afterClose: (() -> Unit)? = null) {
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Что нового в TowerRadar · 0.27.0")
+            .setMessage(ChangeLog.forVersion("0.27.0"))
+            .setPositiveButton("Понятно") { _, _ -> afterClose?.invoke() }
+            .show()
+    }
+
     private fun showUpdateMenu() {
         KhakiDialogBuilder(this, palette).setTitle("Обновления TowerRadar")
             .setMessage("Установлена версия " + currentVersionName() + ".\n\n" +
@@ -1164,11 +1228,13 @@ class MainActivity : Activity(), SensorEventListener {
                 "Android подтверждает установку.")
             .setItems(arrayOf("Проверить стабильную версию",
                 "Проверить тестовую версию",
-                "Сборки GitHub Actions · тесты до релиза")) { _, n ->
+                "Сборки GitHub Actions · тесты до релиза",
+                "История изменений")) { _, n ->
                 when (n) {
                     0 -> checkAvailableRelease(false)
                     1 -> checkAvailableRelease(true)
                     2 -> openExternal("https://github.com/RussoTurissto/TowerRadar/actions")
+                    3 -> showWhatsNew()
                 }
             }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
     }
@@ -1199,7 +1265,7 @@ class MainActivity : Activity(), SensorEventListener {
                         else "Установлена не более старая версия.\n") +
                         "Канал: " + (if (testChannel) "тестовый" else "стабильный"))
                     .setPositiveButton(if (newer) "Скачать APK" else "Открыть релиз") { _, _ ->
-                        if (newer) downloadReleaseApk(release)
+                        if (newer) confirmReleaseDownload(release)
                         else openExternal(release.releasePage)
                     }
                     .setNegativeButton("Закрыть", null)
@@ -1228,10 +1294,26 @@ class MainActivity : Activity(), SensorEventListener {
                         "Скачать, проверить и установить её можно прямо в приложении. " +
                         "Текущие данные сохраняются при установке обновления тем же ключом.")
                     .setPositiveButton("Открыть обновление") { _, _ ->
-                        downloadReleaseApk(available)
+                        confirmReleaseDownload(available)
                     }.setNegativeButton("Позже", null).show()
             }
         }
+    }
+
+    private fun confirmReleaseDownload(release: TowerRelease) {
+        if (!release.prerelease) {
+            downloadReleaseApk(release)
+            return
+        }
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Внимание! Тестовая версия")
+            .setMessage("Вы собираетесь установить тестовую версию TowerRadar " +
+                release.version + ". Она может содержать ошибки, работать нестабильно " +
+                "или нарушать работу отдельных функций.\n\n" +
+                "Вы уверены, что хотите продолжить обновление?")
+            .setPositiveButton("Да") { _, _ -> downloadReleaseApk(release) }
+            .setNegativeButton("Нет", null)
+            .show()
     }
 
     private fun downloadReleaseApk(release: TowerRelease) {
@@ -1380,8 +1462,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun currentVersionName(): String = try {
         @Suppress("DEPRECATION")
-        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.26.0")
-    } catch (_: Exception) { "0.26.0" }
+        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.27.0")
+    } catch (_: Exception) { "0.27.0" }
 
     private fun openExternal(url: String) {
         try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
@@ -2627,7 +2709,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         askLocation()
         verifySavedConnections(skipActive = true)
-        checkReleaseOnLaunch()
+        showStartupInformation()
     }
 
     /** Viewing position and search/GPS origin are intentionally independent. */
