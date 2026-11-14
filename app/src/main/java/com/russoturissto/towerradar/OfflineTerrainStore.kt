@@ -28,7 +28,21 @@ class OfflineTerrainStore(private val context: Context) {
     private fun terrainZoom(radiusKm: Int) = if (radiusKm <= 5) 12 else 11
 
     fun isComplete(id: Long): Boolean = try {
-        JSONObject(File(directory(id), "manifest.json").readText()).optBoolean("complete")
+        val dir = directory(id)
+        val obj = JSONObject(File(dir, "manifest.json").readText())
+        if (!obj.optBoolean("complete")) return false
+        val z = obj.getInt("z")
+        val bounds = OfflineBounds(obj.getDouble("south"), obj.getDouble("west"),
+            obj.getDouble("north"), obj.getDouble("east"))
+        val x0 = OfflineAreaPolicy.tileX(bounds.west, z)
+        val x1 = OfflineAreaPolicy.tileX(bounds.east, z)
+        val y0 = OfflineAreaPolicy.tileY(bounds.north, z)
+        val y1 = OfflineAreaPolicy.tileY(bounds.south, z)
+        val count = (x1 - x0 + 1) * (y1 - y0 + 1)
+        count in 1..200 && count == obj.optInt("total") &&
+            (x0..x1).all { x -> (y0..y1).all { y ->
+                File(dir, "$z/$x/$y.png").let { it.isFile && it.length() >= 100 }
+            } }
     } catch (_: Exception) { false }
 
     fun stop(id: Long) { cancelled.add(id) }
