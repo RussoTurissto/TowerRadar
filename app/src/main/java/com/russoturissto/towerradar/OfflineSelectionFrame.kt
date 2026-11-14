@@ -34,5 +34,4 @@ class OfflineSelectionFrame(context: Context) : View(context) {
         canvas.drawRect(r, inside)
         canvas.drawRect(r, border)
     }
-    override fun onTouchEvent(event: android.view.MotionEvent): Boolean = false
 }

@@ -1,4 +1,4 @@
-name: Publish verified TowerRadar v0.26.0 APK
+name: Publish verified TowerRadar v0.27.0 APK
 on:
   workflow_run:
     workflows: ["Build Android APK"]
@@ -61,9 +61,9 @@ jobs:
           actual="$(sha256sum extracted/towerradar-signed.apk | awk '{print $1}')"
           test "$expected" = "$actual"
           # Publishing must never retag an APK built with an outdated version code.
-          test "$(grep -m1 'versionCode = ' app/build.gradle.kts | awk '{print $3}')" = "26"
-          test "$(grep -m1 'versionName = ' app/build.gradle.kts | cut -d '"' -f 2)" = "0.26.0"
-          cp extracted/towerradar-signed.apk TowerRadar-v0.26.0.apk
+          test "$(grep -m1 'versionCode = ' app/build.gradle.kts | awk '{print $3}')" = "27"
+          test "$(grep -m1 'versionName = ' app/build.gradle.kts | cut -d '"' -f 2)" = "0.27.0"
+          cp extracted/towerradar-signed.apk TowerRadar-v0.27.0.apk
           echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish direct GitHub Release APK download
@@ -73,15 +73,15 @@ jobs:
           TARGET_SHA: ${{ steps.selection.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view v0.26.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit v0.26.0 --prerelease --repo "$GITHUB_REPOSITORY"
-            gh release upload v0.26.0 TowerRadar-v0.26.0.apk --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.27.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit v0.27.0 --prerelease --repo "$GITHUB_REPOSITORY"
+            gh release upload v0.27.0 TowerRadar-v0.27.0.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.26.0 TowerRadar-v0.26.0.apk \
+            gh release create v0.27.0 TowerRadar-v0.27.0.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
-              --title "TowerRadar v0.26.0 — карточки вышек, ручные записи и обновления" \
-              --notes "TowerRadar 0.26.0: постоянное перекрестие №1 с копируемыми координатами центра карты; копирование координат вышек; одна автоматическая проверка базы за запуск с уведомлениями и детализацией ошибок; единые офлайн-области OpenFreeMap (полная пирамида выбранных масштабов под лимиты провайдера), Mapzen Terrarium для офлайн-профилей рельефа, локальная база вышек; пауза, продолжение и удаление областей; проверка релизов при запуске, загрузка APK в приложении, SHA-256, подпись, пакет и версия до системного установщика Android; скрыт логотип MapLibre при сохранении атрибуции." \
+              --title "TowerRadar v0.27.0 — офлайн-области, быстрые действия, подтверждение тестовых APK" \
+              --notes "TowerRadar 0.27.0: тестовое OTA-обновление требует подтверждения Да/Нет; при первом запуске ссылки на четыре API-ключа; после обновления окно Что нового и история изменений; кнопка плюс раскрывает вверх действия Высота (по центру карты) и Добавить вышку; убраны две старые правые кнопки, GPS-кнопка центрирует и приближает позицию; отключён вызов высоты долгим нажатием; ручной выбор офлайн-области по масштабу карты, радиусы 10 или 30 км; сохранены проверки полноты загрузки и подписи APK." \
               --prerelease
           fi
-          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.26.0/TowerRadar-v0.26.0.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.27.0/TowerRadar-v0.27.0.apk" >> "$GITHUB_STEP_SUMMARY"
