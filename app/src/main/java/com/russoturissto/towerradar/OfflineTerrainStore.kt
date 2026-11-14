@@ -27,7 +27,8 @@ class OfflineTerrainStore(private val context: Context) {
     private fun directory(id: Long) = File(root, id.toString())
     private fun terrainZoom(radiusKm: Int) = if (radiusKm <= 5) 12 else 11
 
-    fun isComplete(id: Long): Boolean = try {
+    fun isComplete(id: Long): Boolean {
+        return try {
         val dir = directory(id)
         val obj = JSONObject(File(dir, "manifest.json").readText())
         if (!obj.optBoolean("complete")) return false
@@ -43,7 +44,8 @@ class OfflineTerrainStore(private val context: Context) {
             (x0..x1).all { x -> (y0..y1).all { y ->
                 File(dir, "$z/$x/$y.png").let { it.isFile && it.length() >= 100 }
             } }
-    } catch (_: Exception) { false }
+        } catch (_: Exception) { false }
+    }
 
     fun bytes(id: Long): Long = directory(id).takeIf { it.isDirectory }
         ?.walkTopDown()?.filter(File::isFile)?.sumOf { it.length() } ?: 0L
