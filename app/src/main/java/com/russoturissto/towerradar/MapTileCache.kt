@@ -31,12 +31,15 @@ class MapTileCache(private val activity: Activity) {
             else "неизвестно"
         return "Подложка: " + (provider?.name ?: "не выбрана") +
             "\\nДисковый кеш: " +
-            if (allowed) "разрешён, лимит " + limitMb() + " МБ" else
+            if (allowed) "разрешён, лимит " + MapCacheLimitPolicy.label(limitMb()) else
                 "отключён правилами поставщика"
     }
 
     fun detailedDiagnostics(provider: MapProvider?): String =
         diagnostics(provider) +
+            (if (limitMb() == MapCacheLimitPolicy.UNLIMITED_MB)
+                "\\nБез ограничения размера со стороны TowerRadar. " +
+                "Доступная память, TTL и правила поставщиков сохраняются." else "") +
             "\\nПоследняя очистка: " + (
                 prefs.getLong("last_cache_purge", 0).takeIf { it > 0 }?.let {
                     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
@@ -49,14 +52,14 @@ class MapTileCache(private val activity: Activity) {
     companion object {
         private const val FIRST_COMPLIANT_CACHE_SCHEMA = 1
         private const val MAX_AGE_MS = 29L * 24L * 60L * 60L * 1000L
-        val limitsMb = intArrayOf(100, 250, 500)
+        val limitsMb = MapCacheLimitPolicy.optionsMb
 
         fun diskCacheAllowed(provider: MapProvider): Boolean =
             provider.keyPref == null || provider.id == "yandex"
     }
 
     fun limitMb(): Int = prefs.getInt("cache_limit_mb", 250)
-        .takeIf { it in limitsMb } ?: 250
+        .takeIf { MapCacheLimitPolicy.valid(it) } ?: 250
 
     /** Call immediately after MapLibre.getInstance, before creating MapView. */
     fun initialize() {
@@ -74,12 +77,12 @@ class MapTileCache(private val activity: Activity) {
     }
 
     private fun applyLimit(done: ((Boolean, String) -> Unit)? = null) {
-        val bytes = limitMb().toLong() * 1024L * 1024L
+        val bytes = MapCacheLimitPolicy.maxBytes(limitMb())
         offline.setMaximumAmbientCacheSize(bytes, object : OfflineManager.FileSourceCallback {
             override fun onSuccess() {
                 done?.let {
                     activity.runOnUiThread {
-                        it(true, "Лимит кеша: " + limitMb() + " МБ")
+                        it(true, "Лимит кеша: " + MapCacheLimitPolicy.label(limitMb()))
                     }
                 }
             }

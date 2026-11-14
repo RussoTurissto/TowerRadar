@@ -1874,8 +1874,8 @@ class MainActivity : Activity(), SensorEventListener {
                 "сохраняются автоматически, пока это разрешено правилами сервера. " +
                 "Для Яндекса предусмотрена очистка не позднее 29 дней. " +
                 "Google и 2ГИС не сохраняются на диск из-за ограничений поставщиков. " +
-                "При первом запуске этой версии старый кеш будет очищен для исправления " +
-                "качества Яндекса. \n\n" +
+                "Вариант «Без ограничений» не ограничивает объём кеша приложением; " +
+                "доступное место, срок хранения тайлов и условия сервиса действуют.\n\n" +
                 "Это не предварительное скачивание районов: вне сети карта отображает " +
                 "только ещё действительные сохранённые тайлы.\\n\\n" +
                 mapTileCache.detailedDiagnostics(MapSources.providers.getOrNull(providerIndex))
@@ -1884,15 +1884,16 @@ class MainActivity : Activity(), SensorEventListener {
                 "Лимит: 100 МБ",
                 "Лимит: 250 МБ · рекомендуется",
                 "Лимит: 500 МБ",
+                "Без ограничений",
                 "Очистить загруженные карты"
             )) { _, selected ->
                 when (selected) {
-                    0, 1, 2 -> mapTileCache.changeLimit(
+                    0, 1, 2, 3 -> mapTileCache.changeLimit(
                         MapTileCache.limitsMb[selected]
                     ) { ok, message ->
                         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                     }
-                    3 -> KhakiDialogBuilder(this, palette)
+                    4 -> KhakiDialogBuilder(this, palette)
                         .setTitle("Очистить кеш карт?")
                         .setMessage("Ранее просмотренные участки могут потребовать " +
                             "новой загрузки через интернет. Сохранённые ключи, " +
