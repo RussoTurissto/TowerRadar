@@ -203,6 +203,8 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var details: LinearLayout
     private lateinit var detailTitle: TextView
     private lateinit var detailBody: TextView
+    private lateinit var detailCoordinates: TextView
+    private var autoUpdateAttempted = false
 
     private var map: MapLibreMap? = null
     private var styled = false
@@ -2242,6 +2244,8 @@ class MainActivity : Activity(), SensorEventListener {
             map = ready
             // Restore camera BEFORE loading any style to avoid OSM/world-map flashes.
             ready.uiSettings.isCompassEnabled = false
+            ready.uiSettings.isLogoEnabled = false
+            ready.uiSettings.isAttributionEnabled = false // Own visible provider credits remain.
             val storedCamera = readLastCamera()
             if (storedCamera != null) {
                 ready.moveCamera(CameraUpdateFactory.newCameraPosition(storedCamera))
@@ -2258,6 +2262,7 @@ class MainActivity : Activity(), SensorEventListener {
                     center ?: LatLng(20.0, 0.0), if (center == null) 2.5 else 12.5))
             }
             northIndicator.setMapBearing(ready.cameraPosition.bearing)
+            updateMapCenterCoordinates()
             // Never temporarily replace an explicitly selected map with OSM.
             val savedId = prefs.getString("map_provider", "auto") ?: "auto"
             val preferredId = if (savedId == "auto")
@@ -2295,10 +2300,12 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             }
             ready.addOnCameraMoveListener {
+                updateMapCenterCoordinates()
                 if (isChoosingCrosshair) updateCrosshairCoordinates()
                 northIndicator.setMapBearing(ready.cameraPosition.bearing)
             }
             ready.addOnCameraIdleListener {
+                updateMapCenterCoordinates()
                 persistLastCamera(force = true)
                 updateOverlays()
                 if (isChoosingCrosshair) updateCrosshairCoordinates()
@@ -2766,6 +2773,21 @@ class MainActivity : Activity(), SensorEventListener {
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         details.addView(detailBody)
+        detailCoordinates = text("Координаты вышки", 13.5f, palette.text).apply {
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = rounded(palette.elevated, 11)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                selectedAimSite?.let { site ->
+                    CoordinateFormatter.format(site.latitude, site.longitude)?.let(::copyCoordinates)
+                }
+            }
+        }
+        details.addView(detailCoordinates, LinearLayout.LayoutParams(-1, -2).apply {
+            topMargin = dp(7)
+        })
         val analysisActions = row()
         details.addView(analysisActions, LinearLayout.LayoutParams(-1, dp(44)).apply {
             topMargin = dp(8)
@@ -2845,7 +2867,7 @@ class MainActivity : Activity(), SensorEventListener {
         // Crosshair mode is a separate, focused location picker: drag the map
         // under the reticle, tap a desired point or zoom for precise placement.
         crosshairReticle = CrosshairView(this, palette.dark).apply {
-            visibility = View.GONE
+            visibility = View.VISIBLE
             isClickable = false
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
@@ -3268,6 +3290,14 @@ class MainActivity : Activity(), SensorEventListener {
             Toast.LENGTH_SHORT).show()
     }
 
+    private fun updateMapCenterCoordinates() {
+        // The reticle and this value refer to the camera target, not the GPS marker.
+        map?.cameraPosition?.target?.let {
+            if (::topStatusPanel.isInitialized)
+                topStatusPanel.updateCoordinates(it.latitude, it.longitude)
+        }
+    }
+
     private fun updateCrosshairCoordinates() {
         if (!isChoosingCrosshair || !::crosshairCoordinates.isInitialized) return
         val focus = map?.cameraPosition?.target ?: return
@@ -3280,7 +3310,7 @@ class MainActivity : Activity(), SensorEventListener {
         val chosen = map?.cameraPosition?.target
         val zoom = map?.cameraPosition?.zoom ?: crosshairStartZoom
         isChoosingCrosshair = false
-        crosshairReticle.visibility = View.GONE
+        crosshairReticle.visibility = View.VISIBLE
         crosshairControls.visibility = View.GONE
         sheetView.visibility = if (mapFullscreen) View.GONE else View.VISIBLE
         floatingRail.visibility = if (mapFullscreen || (sheetExpanded && !landscape))
@@ -3651,7 +3681,6 @@ class MainActivity : Activity(), SensorEventListener {
                     fix.accuracy.takeIf { fix.hasAccuracy() })
             )
         location = fix
-        topStatusPanel.updateCoordinates(fix.latitude, fix.longitude)
         if (needsReselection) onActivePositionChanged()
         gpsLabel.text = if (fix.hasAccuracy())
             "GPS ±" + fix.accuracy.toInt() + " м"
@@ -3810,6 +3839,8 @@ class MainActivity : Activity(), SensorEventListener {
             status.text = "Сначала выберите точку поиска на карте."
             return
         }
+        if (!force && autoUpdateAttempted) return
+        if (!force) autoUpdateAttempted = true // One startup attempt; GPS jitter cannot retrigger.
         if (busy) {
             if (force) pendingManualSearch = true
             return
@@ -4587,7 +4618,6 @@ class MainActivity : Activity(), SensorEventListener {
             nearest.extraInfo?.let { "Дополнительные сведения: " + it },
             "Расстояние: " + distance +
                 (if (manualPoint != null) " · от ручной точки" else " · от GPS"),
-            String.format(Locale.US, "Координаты: %.6f, %.6f", nearest.latitude, nearest.longitude),
             "Источник / достоверность: " + nearest.source,
             towerDatabase.lastChanged(nearest.id)?.let {
                 "Изменена запись: " + java.text.DateFormat.getDateTimeInstance()
@@ -4595,6 +4625,9 @@ class MainActivity : Activity(), SensorEventListener {
             },
             "Источник: " + nearest.url
         ).joinToString("\n")
+        detailCoordinates.text = "⧉  " + (CoordinateFormatter.format(
+            nearest.latitude, nearest.longitude) ?: "координаты недоступны")
+        detailCoordinates.contentDescription = "Координаты вышки. Нажмите, чтобы скопировать"
         profileButton.visibility = View.VISIBLE
         coverageButton.visibility = View.VISIBLE
         manualTowerActions.visibility = if (nearest.id.startsWith("user/"))

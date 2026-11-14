@@ -40,9 +40,9 @@ class TowerStatusHeader(ctx: Context) : FrameLayout(ctx) {
         text = "GPS: ожидание"
         gravity = Gravity.END or Gravity.CENTER_VERTICAL
     }
-private val coordinatesLabel = label(11.5f, secondary).apply {
-        text = "⌖ GPS: ожидание"
-        contentDescription = "GPS координаты пока неизвестны"
+    private val coordinatesLabel = label(13f, primary).apply {
+        text = "⌖ Центр карты: ожидание"
+        contentDescription = "Координаты центра карты пока неизвестны"
     }
     private val copyCoordinatesLabel = label(17f, accent, true).apply {
         text = "⧉"
@@ -90,10 +90,10 @@ private val coordinatesLabel = label(11.5f, secondary).apply {
 
     fun updateCoordinates(latitude: Double, longitude: Double) {
         coordinateValue = CoordinateFormatter.format(latitude, longitude)
-        coordinatesLabel.text = coordinateValue?.let { "⌖ $it" } ?: "⌖ GPS: ожидание"
+        coordinatesLabel.text = coordinateValue?.let { "⌖ $it" } ?: "⌖ Центр карты: ожидание"
         coordinatesLabel.contentDescription = coordinateValue?.let {
-            "GPS координаты $it. Нажмите, чтобы скопировать"
-        } ?: "GPS координаты пока неизвестны"
+            "Координаты центра карты $it. Нажмите, чтобы скопировать"
+        } ?: "Координаты центра карты пока неизвестны"
         copyCoordinatesLabel.visibility = if (coordinateValue != null && canShowCoordinateCopy)
             View.VISIBLE else View.GONE
     }
