@@ -95,7 +95,7 @@ class OfflineAreaManager(private val activity: Activity) {
                 }
             }
         }
-        region.isDeliveringInactiveMessages = true
+        region.setDeliverInactiveMessages(true)
         region.setObserver(object : OfflineRegion.OfflineRegionObserver {
             override fun onStatusChanged(status: OfflineRegionStatus) {
                 if (status.completedResourceSize >= OfflineAreaPolicy.MAX_MAP_BYTES ||
