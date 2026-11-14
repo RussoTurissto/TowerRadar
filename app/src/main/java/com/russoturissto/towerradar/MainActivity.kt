@@ -889,13 +889,15 @@ class MainActivity : Activity(), SensorEventListener {
                 "Пользовательские вышки · управление",
                 "Высота антенны · расчётный сценарий",
                 "Хранилище · данные и кеш",
-                "Резервная копия · экспорт / восстановление")) { _, n ->
+                "Резервная копия · экспорт / восстановление",
+                "Уведомления о состоянии базы вышек")) { _, n ->
                 when (n) {
                     0 -> showAddUserTower()
                     1 -> showUserTowers()
                     2 -> showHeightScenario()
                     3 -> showTowerStorageSettings()
                     4 -> showBackupMenu()
+                    5 -> enableDatabaseNotifications()
                 }
             }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
     }
@@ -4116,11 +4118,44 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun enableDatabaseNotifications() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 108)
+        } else Toast.makeText(this, "Уведомления уже разрешены", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun notifyDatabaseResult(message: String, success: Boolean) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED) return
+        try {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE)
+                as android.app.NotificationManager
+            val channel = "towerradar_database_updates"
+            if (Build.VERSION.SDK_INT >= 26) {
+                manager.createNotificationChannel(android.app.NotificationChannel(
+                    channel, "Обновление базы вышек",
+                    android.app.NotificationManager.IMPORTANCE_DEFAULT))
+            }
+            val notification = android.app.Notification.Builder(this, channel)
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setContentTitle(if (success) "База TowerRadar проверена"
+                    else "Обновление базы не выполнено")
+                .setContentText(message.take(150))
+                .setAutoCancel(true)
+                .build()
+            manager.notify(2601, notification)
+        } catch (_: Exception) { /* In-app status always remains available. */ }
+    }
+
     private fun progressEnd(message: String, success: Boolean) {
         runOnUiThread {
             if (!::progressStrip.isInitialized || isDestroyed) return@runOnUiThread
             val ticket = ++progressSequence
             progressLabel.text = message
+            notifyDatabaseResult(message, success)
             progressBar.isIndeterminate = false
             progressBar.progress = if (success) 100 else 0
             progressRequested = true
@@ -4224,12 +4259,14 @@ class MainActivity : Activity(), SensorEventListener {
                         sites = saved
                         updateOperatorChoices()
                         showPins()
-                        status.text = if (saved.isNotEmpty())
-                            "Нет сети · сохранённые вышки: " + saved.size
-                        else e.message?.take(120) ?: "Не удалось загрузить данные"
+                        status.text = "Обновление не выполнено: " +
+                            (e.localizedMessage ?: "сервис недоступен").take(90) +
+                            " · сохранено вышек " + saved.size
                     }
                 }
-                progressEnd("Ошибка обновления · сохранённая база не затронута", false)
+                progressEnd("Ошибка обновления: " +
+                    (e.localizedMessage ?: "нет ответа сервера").take(90) +
+                    " · база сохранена", false)
             } finally {
                 runOnUiThread {
                     busy = false
@@ -4943,6 +4980,12 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 108) {
+            Toast.makeText(this, if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED)
+                "Уведомления базы разрешены" else "Уведомления не разрешены",
+                Toast.LENGTH_SHORT).show()
+            return
+        }
         if (requestCode == 101) {
             if (hasLocation()) startLocationUpdates()
             else status.text = "Геолокация запрещена. Можно искать в центре карты."

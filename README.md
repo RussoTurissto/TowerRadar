@@ -274,3 +274,18 @@ Android unit-тесты, Lint и проверка цифровой подпис�
 - Указатель N/стрелка по умолчанию использует магнитно-ориентированный Rotation Vector и поправку геомагнитного склонения при наличии GPS, обновляется при повороте телефона и экрана. По нажатию переключается между компасом телефона и севером карты. При отсутствии датчика используется север карты.
 - Сектор обзора отделён от длинного пунктирного луча: длина сектора регулируется от 10 до 70% от длины луча, по умолчанию 30%. Яркость независима.
 - **v0.13.0 — Pre-release**, распространяется только APK, подписанный постоянным сертификатом TowerRadar. Перед выпуском 1.0.0 stable требуется отдельное одобрение пользователя.
+
+
+## TowerRadar 0.26.0 — offline areas and safe APK updates
+
+- **Maps > Offline areas and cache > Save area around map center**: choose a 2/5/10/20 km radius and a supported maximum zoom. A saved area requests all zoom levels from z6 through the selected zoom (not just the currently visible screenshot).
+- The only prefetch-enabled built-in basemap is **OpenFreeMap** (vector style at `https://tiles.openfreemap.org/styles/liberty`). OpenStreetMap Foundation, Yandex, and other providers are not used for bulk downloading. Bounds and zoom must fit the per-download limit. Actual download progress, completeness, and limits are checked by MapLibre; unfinished areas remain incomplete.
+- The same area saves **Mapzen Terrarium** elevation tiles for local terrain profiles. A complete saved DEM allows calculation of new lines between any two points covered by the area, without internet. A previously generated exact profile is also retained after 30 days. Incomplete or never-downloaded areas cannot provide fabricated heights.
+- **My saved areas** shows map/terrain availability; use it to resume, pause, visit or delete the area. Base station records are held in the existing separate SQLite database. Deleting an area does not delete saved towers.
+- The standard map always has the fixed four-ray reticle in the exact center. The upper coordinates are the map center, *not* the GPS fix. Tap them to copy. Tap the coordinate row in any tower detail to copy that tower's location.
+- The automatic base station refresh is attempted at most once per app launch, with a progress result and notification when Android permission is granted. Further refreshes require user action.
+- **Settings > Updates** checks stable and prerelease GitHub Releases. It can download the APK into the application's Downloads area, display progress, verify asset SHA-256, package name, increasing Android version code and the installed signer, then open the system installer. Android must still approve installation. Installed data is not cleared.
+
+Offline limitations: map labels and zoom details cannot exceed what the source style and tiles actually provide. MapLibre's `isComplete` status is the map download completion signal. A completed map with an incomplete DEM must not be described as a complete combined offline pack. Downloading an area does not grant rights to bulk-download other map providers.
+
+See https://openfreemap.org/tos/ and https://operations.osmfoundation.org/policies/tiles/.
