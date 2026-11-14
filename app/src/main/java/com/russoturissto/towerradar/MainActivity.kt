@@ -1209,7 +1209,10 @@ class MainActivity : Activity(), SensorEventListener {
     private fun checkReleaseOnLaunch() {
         apiExecutor.execute {
             val available = try {
-                ReleaseFeed.query(true) ?: ReleaseFeed.query(false)
+                listOfNotNull(ReleaseFeed.query(true), ReleaseFeed.query(false))
+                    .reduceOrNull { current, next ->
+                        if (ReleaseFeed.isNewer(next.version, current.version)) next else current
+                    }
             } catch (_: Exception) { null }
             runOnUiThread {
                 if (isFinishing || isDestroyed || available == null ||

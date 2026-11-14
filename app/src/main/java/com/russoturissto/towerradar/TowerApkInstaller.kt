@@ -105,7 +105,9 @@ object TowerApkInstaller {
             ?: throw SecurityException("Android не распознал APK")
         @Suppress("DEPRECATION")
         val installed = c.packageManager.getPackageInfo(c.packageName, flag)
-        if (archive.packageName != c.packageName || versionCode(archive) <= versionCode(installed))
+        if (archive.packageName != c.packageName ||
+            archive.versionName != release.version ||
+            versionCode(archive) <= versionCode(installed))
             throw SecurityException("Неверный пакет или номер версии")
         if (signerHashes(archive).isEmpty() || signerHashes(archive) != signerHashes(installed))
             throw SecurityException("Сертификат подписи не совпадает")
