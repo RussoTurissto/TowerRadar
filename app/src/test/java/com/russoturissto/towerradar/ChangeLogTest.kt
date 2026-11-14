@@ -22,6 +22,11 @@ class ChangeLogTest {
         assertTrue(notes.contains("не переключают"))
         assertTrue(notes.contains("временный кеш"))
     }
+    @Test fun coordinateTapRegionFixIsDocumented() {
+        val notes = ChangeLog.forVersion("0.27.3")
+        assertTrue(notes.contains("текстом и значком"))
+        assertTrue(notes.contains("не вызывают копирование"))
+    }
     @Test fun unknownVersionIsHonest() {
         assertFalse(ChangeLog.forVersion("9.99.0").contains("30 км"))
     }

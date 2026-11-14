@@ -1367,7 +1367,7 @@ class MainActivity : Activity(), SensorEventListener {
     /** The first-install guide is distinct from the changelog on real OTA upgrades. */
     private fun showStartupInformation() {
         val preferences = getPreferences(Context.MODE_PRIVATE)
-        val current = 29
+        val current = 30
         val previous = preferences.getInt("startup_seen_version", 0)
         if (previous == current) {
             checkReleaseOnLaunch()
@@ -1422,8 +1422,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun showWhatsNew(afterClose: (() -> Unit)? = null) {
         KhakiDialogBuilder(this, palette)
-            .setTitle("Что нового в TowerRadar · 0.27.2")
-            .setMessage(ChangeLog.forVersion("0.27.2"))
+            .setTitle("Что нового в TowerRadar · 0.27.3")
+            .setMessage(ChangeLog.forVersion("0.27.3"))
             .setPositiveButton("Понятно") { _, _ -> afterClose?.invoke() }
             .show()
     }
@@ -1673,8 +1673,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun currentVersionName(): String = try {
         @Suppress("DEPRECATION")
-        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.27.2")
-    } catch (_: Exception) { "0.27.2" }
+        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.27.3")
+    } catch (_: Exception) { "0.27.3" }
 
     private fun openExternal(url: String) {
         try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
@@ -3046,7 +3046,8 @@ class MainActivity : Activity(), SensorEventListener {
             setOnClickListener { mapCenterCoordinateValue?.let(::copyCoordinates) }
         }
         rootView.addView(mapCoordinatesLabel,
-            FrameLayout.LayoutParams(-1, dp(27), Gravity.TOP or Gravity.START))
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(27),
+                Gravity.TOP or Gravity.START))
 
         // System map-only fullscreen button and settings float BELOW the header.
         val header = row()
@@ -3745,10 +3746,15 @@ class MainActivity : Activity(), SensorEventListener {
                 topMargin = 0
             }
         statusBarProtection.visibility = if (immersive) View.GONE else View.VISIBLE
+        // Only the yellow text and copy glyph are clickable. A full-width
+        // TextView was intercepting map taps in the otherwise empty right side.
+        mapCoordinatesLabel.maxWidth =
+            (width - systemLeftInset - systemRightInset - dp(22))
+                .coerceAtLeast(dp(120))
         mapCoordinatesLabel.layoutParams =
             (mapCoordinatesLabel.layoutParams as FrameLayout.LayoutParams).apply {
                 gravity = Gravity.TOP or Gravity.START
-                this.width = ViewGroup.LayoutParams.MATCH_PARENT
+                this.width = ViewGroup.LayoutParams.WRAP_CONTENT
                 this.height = dp(27)
                 leftMargin = systemLeftInset + dp(12)
                 rightMargin = systemRightInset + dp(10)
