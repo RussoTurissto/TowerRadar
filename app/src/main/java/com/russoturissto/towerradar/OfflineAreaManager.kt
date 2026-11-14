@@ -2,6 +2,7 @@ package com.russoturissto.towerradar
 
 import android.app.Activity
 import org.json.JSONObject
+import java.util.Locale
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.offline.OfflineManager
@@ -79,7 +80,13 @@ class OfflineAreaManager(private val activity: Activity) {
                 if (status == null) { done("Нет сведений о карте"); return }
                 val result = if (status.isComplete) "Карта готова" else
                     "Карта: ${status.completedResourceCount}/${status.requiredResourceCount} ресурсов"
-                done(result + " · " + if (terrainReady(area)) "рельеф готов" else "рельеф не завершён")
+                val mapSize = String.format(Locale.US, "%.1f", 
+                    status.completedResourceSize / 1048576.0)
+                val terrainSize = String.format(Locale.US, "%.1f",
+                    terrain.bytes(area.region.id) / 1048576.0)
+                done(result + " · карта $mapSize МБ\n" +
+                    (if (terrainReady(area)) "Рельеф готов" else "Рельеф не завершён") +
+                    " · рельеф $terrainSize МБ")
             }
             override fun onError(error: String?) { done(error ?: "Нет сведений о карте") }
         })

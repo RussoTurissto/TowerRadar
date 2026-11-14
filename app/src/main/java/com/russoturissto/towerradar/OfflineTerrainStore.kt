@@ -45,6 +45,9 @@ class OfflineTerrainStore(private val context: Context) {
             } }
     } catch (_: Exception) { false }
 
+    fun bytes(id: Long): Long = directory(id).takeIf { it.isDirectory }
+        ?.walkTopDown()?.filter(File::isFile)?.sumOf { it.length() } ?: 0L
+
     fun stop(id: Long) { cancelled.add(id) }
     fun remove(id: Long) {
         stop(id)
