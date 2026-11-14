@@ -608,7 +608,9 @@ class MainActivity : Activity(), SensorEventListener {
 
     /** Select a reachable raster tile host using a single low-zoom tile request. */
     private fun chooseBasemap() {
-        if (choosingMap) return
+        // A late background check must never replace a manual Yandex/MapTiler choice.
+        if (choosingMap || getPreferences(Context.MODE_PRIVATE)
+                .getString("map_provider", "auto") != "auto") return
         choosingMap = true
         val point = location?.let { LatLng(it.latitude, it.longitude) }
             ?: center ?: LatLng(49.0, 39.0)
@@ -618,10 +620,14 @@ class MainActivity : Activity(), SensorEventListener {
             }
             runOnUiThread {
                 choosingMap = false
-                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (isFinishing || isDestroyed ||
+                    getPreferences(Context.MODE_PRIVATE)
+                        .getString("map_provider", "auto") != "auto") return@runOnUiThread
                 if (selected >= 0) {
-                    if (selected != providerIndex) applyBasemap(MapSources.providers[selected])
-                    mapStatus.text = "Подложка: " + MapSources.providers[selected].attribution
+                    // selected is an index into unkeyed(), NOT providers().
+                    val resolved = MapSources.unkeyed()[selected]
+                    if (resolved.id != selectedMapProvider().id) applyBasemap(resolved)
+                    mapStatus.text = "Подложка: " + resolved.attribution
                 } else {
                     // No network: keep the previous source and any valid cached tiles.
                     // Do NOT reset a remembered OSM provider or erase its selection.
@@ -657,11 +663,23 @@ class MainActivity : Activity(), SensorEventListener {
             else requestMapKey(provider)
             return
         }
+        // For a manually selected Yandex Tiles or MapTiler layer, draw its own
+        // style directly, including valid cached resources when connectivity fails.
+        // Connection probing is informational and cannot substitute another source.
+        if (provider.id == "yandex" || MapSources.mapTiler(provider)) {
+            getPreferences(Context.MODE_PRIVATE).edit()
+                .putString("map_provider", provider.id).apply()
+            applyBasemap(provider, key)
+            provider.keyPref?.let(::verifyConnection)
+            return
+        }
         if (choosingMap) {
             mapStatus.text = "Сервер карты ещё проверяется."
             return
         }
         choosingMap = true
+        getPreferences(Context.MODE_PRIVATE).edit()
+            .putString("map_provider", provider.id).apply()
         provider.keyPref?.let { checkingApi.add(it) }
         refreshYandexConnectButton()
         mapStatus.text = "Проверяем " + provider.name + "…"
@@ -678,9 +696,8 @@ class MainActivity : Activity(), SensorEventListener {
                     checkingApi.remove(pref)
                 }
                 redrawConnectionStatuses()
-                if (test.connected) {
-                    getPreferences(Context.MODE_PRIVATE).edit()
-                        .putString("map_provider", provider.id).apply()
+                if (test.connected && getPreferences(Context.MODE_PRIVATE)
+                        .getString("map_provider", "auto") == provider.id) {
                     test.session?.let { googleSessions[provider.id] = it }
                     applyBasemap(provider, key, test.session)
                     mapStatus.text = "✓ " + provider.name + " · подключено"
@@ -987,15 +1004,34 @@ class MainActivity : Activity(), SensorEventListener {
             }.setNegativeButton("Назад") { _, _ -> showTowersMenu() }.show()
     }
 
+    private fun selectedMapProvider(): MapProvider =
+        MapSources.providers.getOrNull(providerIndex) ?: MapSources.providers.first()
+
     private fun showOfflineAreaInfo() {
+        val provider = selectedMapProvider()
+        val capability = OfflineMapPolicy.capability(provider.id)
+        val explanation = when (capability) {
+            OfflineMapCapability.REGIONAL_DOWNLOAD ->
+                "Для этой карты доступна загрузка области на всех выбранных масштабах. " +
+                    "Вышки и рельеф загружаются отдельно. До 1800 тайлов карты на пакет."
+            OfflineMapCapability.VIEWED_TILE_CACHE ->
+                "Для этой карты сохраняются только тайлы, фактически открытые при просмотре. " +
+                    "Заранее скачать весь район нельзя. Для Яндекс Tiles API действует " +
+                    "временный кеш до 29 дней. Размер кеша настраивается отдельно."
+            OfflineMapCapability.NO_REGION_DOWNLOAD ->
+                "Предварительное скачивание региона из этого сервиса недоступно. " +
+                    "Режим браузерной карты и условия поставщика не дают TowerRadar " +
+                    "возможности гарантировать работу без сети."
+        }
         KhakiDialogBuilder(this, palette).setTitle("Офлайн-области")
-            .setMessage("Одна область включает векторную карту OpenFreeMap на ВСЕХ " +
-                "выбранных масштабах, тайлы высот Mapzen и сохранённые вышки. " +
-                "Карты Яндекса и стандартные OSM-тайлы не скачиваются массово. " +
-                "Максимум 1800 тайлов в одном пакете; большие районы требуют " +
-                "меньшего масштаба или нескольких небольших областей.")
-            .setItems(arrayOf("Выбрать область вокруг центра карты",
-                "Мои сохранённые области", "Кеш просмотренных карт"))
+            .setMessage("Выбрана: " + provider.name + ".\n\n" + explanation +
+                "\n\nTowerRadar не переключает выбранную карту на другую подложку.")
+            .setItems(arrayOf(
+                if (capability == OfflineMapCapability.REGIONAL_DOWNLOAD)
+                    "Скачать офлайн-область этой карты"
+                else "Офлайн-область выбранной карты · возможности",
+                "Мои сохранённые области",
+                "Кеш просмотренных карт"))
             { _, selected -> when (selected) {
                 0 -> selectOfflineRadius()
                 1 -> listOfflineAreas()
@@ -1003,7 +1039,38 @@ class MainActivity : Activity(), SensorEventListener {
             } }.setNegativeButton("Назад") { _, _ -> showMapsMenu() }.show()
     }
 
+    private fun showSelectedMapOfflineLimit() {
+        val provider = selectedMapProvider()
+        val viewed = OfflineMapPolicy.capability(provider.id) ==
+            OfflineMapCapability.VIEWED_TILE_CACHE
+        val description = if (provider.id == "yandex")
+            "Яндекс Tiles API разрешает временно кешировать полученные при просмотре " +
+                "тайлы, но не сохранять целые районы заранее или обходить условия API. " +
+                "Просматривайте нужные участки обычным способом: TowerRadar использует " +
+                "временный кеш Яндекса и очищает его не позднее 29 дней. " +
+                "Спутник и гибрид Яндекса работают через JavaScript API и не имеют " +
+                "управляемого TowerRadar офлайн-кеша."
+        else if (viewed)
+            "Открытые при обычном просмотре тайлы могут сохраняться временно, " +
+                "пока это допускается картографическим сервисом. " +
+                "Загрузка всей области через этот API не поддерживается."
+        else
+            "Для этой подложки предварительное скачивание не поддерживается. " +
+                "Временным кешем карт браузера или сервиса TowerRadar не управляет."
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Кеш: " + provider.name)
+            .setMessage(description + "\n\nВыбранная карта останется прежней.")
+            .setPositiveButton(if (viewed) "Настройки кеша" else "Понятно") { _, _ ->
+                if (viewed) showCacheSettings()
+            }
+            .setNegativeButton("Закрыть", null).show()
+    }
+
     private fun selectOfflineRadius() {
+        if (!OfflineMapPolicy.canCreateRegion(selectedMapProvider().id)) {
+            showSelectedMapOfflineLimit()
+            return
+        }
         val target = map?.cameraPosition?.target
         if (target == null) {
             Toast.makeText(this, "Сначала откройте карту", Toast.LENGTH_LONG).show()
@@ -1058,11 +1125,12 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun startOfflineSelection() {
-        val current = map ?: return
-        if (offlineSelectionEnabled) return
-        // Preview the actual offline basemap, not a licensed online Yandex/OSM layer.
-        MapSources.providers.firstOrNull { it.id == "openfreemap-offline" }
-            ?.let(::useMapChoice)
+        if (!OfflineMapPolicy.canCreateRegion(selectedMapProvider().id)) {
+            showSelectedMapOfflineLimit()
+            return
+        }
+        if (map == null || offlineSelectionEnabled) return
+        // Never replace the map chosen by the user as a side effect of selecting an area.
         offlineSelectionEnabled = true
         details.visibility = View.GONE
         if (actionMenuExpanded) setActionMenuExpanded(false)
@@ -1159,6 +1227,10 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun confirmOfflineArea(target: LatLng, bounds: OfflineBounds,
                                    radiusKm: Int, zoom: Int) {
+        if (!OfflineMapPolicy.canCreateRegion(selectedMapProvider().id)) {
+            showSelectedMapOfflineLimit()
+            return
+        }
         val count = OfflineAreaPolicy.countTiles(bounds, OfflineAreaPolicy.MIN_ZOOM, zoom)
         KhakiDialogBuilder(this, palette).setTitle("Сохранить офлайн-область?")
             .setMessage("Центр: " + CoordinateFormatter.format(target.latitude, target.longitude) +
@@ -1173,8 +1245,12 @@ class MainActivity : Activity(), SensorEventListener {
                 val name = "Область " +
                     String.format(Locale.US, "%.3f, %.3f", target.latitude, target.longitude) +
                     (if (radiusKm == 0) " · вручную" else " · $radiusKm км")
-                val offlineProvider = MapSources.providers.first { it.id == "openfreemap-offline" }
-                useMapChoice(offlineProvider)
+                if (!OfflineMapPolicy.canCreateRegion(selectedMapProvider().id)) {
+                    showSelectedMapOfflineLimit()
+                    return@setPositiveButton
+                }
+                // OfflineAreaManager downloads OpenFreeMap resources without changing
+                // the rendered style or the persisted map_provider preference.
                 offlineAreas.create(name, bounds, radiusKm, zoom) { state ->
                     if (!isDestroyed && !isFinishing) mapStatus.text = state.message
                     if (!isDestroyed && !isFinishing && state.complete) {
@@ -1237,16 +1313,21 @@ class MainActivity : Activity(), SensorEventListener {
             if (isFinishing || isDestroyed) return@status
             KhakiDialogBuilder(this, palette).setTitle(area.name)
                 .setMessage(description + "\nМасштабы 6–${area.maxZoom}. " +
-                    "В офлайн-режиме используйте подложку OpenFreeMap.")
+                    "Пакет содержит OpenFreeMap; для просмотра без сети " +
+                    "выберите OpenFreeMap вручную в списке карт. " +
+                    "Текущую подложку TowerRadar не меняет.")
                 .setItems(arrayOf("Показать область на карте",
                     "Продолжить загрузку карты и рельефа",
                     "Приостановить загрузку",
                     "Удалить область")) { _, selected ->
                     when (selected) {
                         0 -> {
-                            MapSources.providers.firstOrNull {
-                                it.id == "openfreemap-offline"
-                            }?.let(::useMapChoice)
+                            if (selectedMapProvider().id != "openfreemap-offline") {
+                                Toast.makeText(this,
+                                    "Подложка сохранена. Для использования офлайн " +
+                                        "выберите OpenFreeMap вручную.",
+                                    Toast.LENGTH_LONG).show()
+                            }
                             map?.animateCamera(CameraUpdateFactory.newLatLngZoom(
                                 LatLng((area.bounds.north + area.bounds.south) / 2,
                                     (area.bounds.east + area.bounds.west) / 2),
