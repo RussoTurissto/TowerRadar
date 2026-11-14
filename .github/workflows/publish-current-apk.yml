@@ -1,4 +1,4 @@
-name: Publish verified TowerRadar v0.27.1 APK
+name: Publish verified TowerRadar v0.27.2 APK
 on:
   workflow_run:
     workflows: ["Build Android APK"]
@@ -61,9 +61,9 @@ jobs:
           actual="$(sha256sum extracted/towerradar-signed.apk | awk '{print $1}')"
           test "$expected" = "$actual"
           # Publishing must never retag an APK built with an outdated version code.
-          test "$(grep -m1 'versionCode = ' app/build.gradle.kts | awk '{print $3}')" = "28"
-          test "$(grep -m1 'versionName = ' app/build.gradle.kts | cut -d '"' -f 2)" = "0.27.1"
-          cp extracted/towerradar-signed.apk TowerRadar-v0.27.1.apk
+          test "$(grep -m1 'versionCode = ' app/build.gradle.kts | awk '{print $3}')" = "29"
+          test "$(grep -m1 'versionName = ' app/build.gradle.kts | cut -d '"' -f 2)" = "0.27.2"
+          cp extracted/towerradar-signed.apk TowerRadar-v0.27.2.apk
           echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish direct GitHub Release APK download
@@ -73,15 +73,15 @@ jobs:
           TARGET_SHA: ${{ steps.selection.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view v0.27.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit v0.27.1 --prerelease --repo "$GITHUB_REPOSITORY"
-            gh release upload v0.27.1 TowerRadar-v0.27.1.apk --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.27.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit v0.27.2 --prerelease --repo "$GITHUB_REPOSITORY"
+            gh release upload v0.27.2 TowerRadar-v0.27.2.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.27.1 TowerRadar-v0.27.1.apk \
+            gh release create v0.27.2 TowerRadar-v0.27.2.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
-              --title "TowerRadar v0.27.1 — координаты, кнопки, компас, портрет и кеш" \
-              --notes "TowerRadar 0.27.1: координаты перекрестия перенесены под верхнюю панель и выделены контрастным жёлтым цветом; отдельный слой быстрых действий, фиксированные кнопки плюс и GPS; улучшенные иконки высоты и вышки; компас плавно поднимается и опускается при раскрытии меню; вертикальная ориентация; кеш карт до 100, 250, 500 МБ или Без ограничений (при наличии памяти и с учётом срока хранения тайлов)." \
+              --title "TowerRadar v0.27.2 — сохранение выбранной карты и кеш Яндекс" \
+              --notes "TowerRadar 0.27.2: выбранная пользователем подложка больше не сбрасывается при открытии офлайн-областей, выборе рамкой, скачивании или просмотре сохранённой области. Яндекс Tiles API продолжает временно кешировать тайлы, полученные при обычном просмотре; массовая предварительная загрузка Яндекс, OSM и других карт без разрешения не выполняется. Для OpenFreeMap региональная офлайн-загрузка доступна. Автоматическая проверка доступности больше не перезаписывает ручной выбор." \
               --prerelease
           fi
-          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.27.1/TowerRadar-v0.27.1.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.27.2/TowerRadar-v0.27.2.apk" >> "$GITHUB_STEP_SUMMARY"

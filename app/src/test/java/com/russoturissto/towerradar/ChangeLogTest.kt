@@ -16,6 +16,12 @@ class ChangeLogTest {
         assertTrue(notes.contains("Компас"))
         assertTrue(notes.contains("Без ограничений"))
     }
+    @Test fun providerSwitchFixIsDocumented() {
+        val notes = ChangeLog.forVersion("0.27.2")
+        assertTrue(notes.contains("Яндекс"))
+        assertTrue(notes.contains("не переключают"))
+        assertTrue(notes.contains("временный кеш"))
+    }
     @Test fun unknownVersionIsHonest() {
         assertFalse(ChangeLog.forVersion("9.99.0").contains("30 км"))
     }

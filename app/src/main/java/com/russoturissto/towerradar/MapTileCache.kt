@@ -30,7 +30,7 @@ class MapTileCache(private val activity: Activity) {
             DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(last))
             else "неизвестно"
         return "Подложка: " + (provider?.name ?: "не выбрана") +
-            "\\nДисковый кеш: " +
+            "\nДисковый кеш: " +
             if (allowed) "разрешён, лимит " + MapCacheLimitPolicy.label(limitMb()) else
                 "отключён правилами поставщика"
     }
@@ -38,15 +38,15 @@ class MapTileCache(private val activity: Activity) {
     fun detailedDiagnostics(provider: MapProvider?): String =
         diagnostics(provider) +
             (if (limitMb() == MapCacheLimitPolicy.UNLIMITED_MB)
-                "\\nБез ограничения размера со стороны TowerRadar. " +
+                "\nБез ограничения размера со стороны TowerRadar. " +
                 "Доступная память, TTL и правила поставщиков сохраняются." else "") +
-            "\\nПоследняя очистка: " + (
+            "\nПоследняя очистка: " + (
                 prefs.getLong("last_cache_purge", 0).takeIf { it > 0 }?.let {
                     DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
                         .format(Date(it))
                 } ?: "неизвестна") +
-            "\\nСетевых запросов тайлов за сеанс: " + networkTileRequests.get() +
-            "\\nУспешное отображение из кеша зависит от TTL тайлов и политики сервера. " +
+            "\nСетевых запросов тайлов за сеанс: " + networkTileRequests.get() +
+            "\nУспешное отображение из кеша зависит от TTL тайлов и политики сервера. " +
             "Размер занятого SQLite-кеша MapLibre API отдельно не сообщает."
 
     companion object {

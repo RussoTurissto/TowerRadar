@@ -1015,9 +1015,11 @@ class MainActivity : Activity(), SensorEventListener {
                 "Для этой карты доступна загрузка области на всех выбранных масштабах. " +
                     "Вышки и рельеф загружаются отдельно. До 1800 тайлов карты на пакет."
             OfflineMapCapability.VIEWED_TILE_CACHE ->
-                "Для этой карты сохраняются только тайлы, фактически открытые при просмотре. " +
-                    "Заранее скачать весь район нельзя. Для Яндекс Tiles API действует " +
-                    "временный кеш до 29 дней. Размер кеша настраивается отдельно."
+                "Для этой карты могут сохраняться только тайлы, фактически открытые " +
+                    "при просмотре, с учётом ограничений поставщика. " +
+                    (if (provider.id == "yandex") "Кеш Яндекс Tiles API временный, до 29 дней. "
+                        else "") +
+                    "Заранее скачать весь район нельзя. Размер кеша настраивается отдельно."
             OfflineMapCapability.NO_REGION_DOWNLOAD ->
                 "Предварительное скачивание региона из этого сервиса недоступно. " +
                     "Режим браузерной карты и условия поставщика не дают TowerRadar " +
@@ -1365,7 +1367,7 @@ class MainActivity : Activity(), SensorEventListener {
     /** The first-install guide is distinct from the changelog on real OTA upgrades. */
     private fun showStartupInformation() {
         val preferences = getPreferences(Context.MODE_PRIVATE)
-        val current = 28
+        val current = 29
         val previous = preferences.getInt("startup_seen_version", 0)
         if (previous == current) {
             checkReleaseOnLaunch()
@@ -1420,8 +1422,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun showWhatsNew(afterClose: (() -> Unit)? = null) {
         KhakiDialogBuilder(this, palette)
-            .setTitle("Что нового в TowerRadar · 0.27.1")
-            .setMessage(ChangeLog.forVersion("0.27.1"))
+            .setTitle("Что нового в TowerRadar · 0.27.2")
+            .setMessage(ChangeLog.forVersion("0.27.2"))
             .setPositiveButton("Понятно") { _, _ -> afterClose?.invoke() }
             .show()
     }
@@ -1671,8 +1673,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun currentVersionName(): String = try {
         @Suppress("DEPRECATION")
-        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.27.1")
-    } catch (_: Exception) { "0.27.1" }
+        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.27.2")
+    } catch (_: Exception) { "0.27.2" }
 
     private fun openExternal(url: String) {
         try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
@@ -1961,7 +1963,7 @@ class MainActivity : Activity(), SensorEventListener {
                 "Вариант «Без ограничений» не ограничивает объём кеша приложением; " +
                 "доступное место, срок хранения тайлов и условия сервиса действуют.\n\n" +
                 "Это не предварительное скачивание районов: вне сети карта отображает " +
-                "только ещё действительные сохранённые тайлы.\\n\\n" +
+                "только ещё действительные сохранённые тайлы.\n\n" +
                 mapTileCache.detailedDiagnostics(MapSources.providers.getOrNull(providerIndex))
             )
             .setItems(arrayOf(
