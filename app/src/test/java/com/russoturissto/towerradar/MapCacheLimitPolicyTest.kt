@@ -5,7 +5,9 @@ import org.junit.Test
 
 class MapCacheLimitPolicyTest {
     @Test fun allowedChoicesIncludeUnlimited() {
-        assertArrayEquals(intArrayOf(100, 250, 500, -1), MapCacheLimitPolicy.optionsMb)
+        assertArrayEquals(intArrayOf(500, -1), MapCacheLimitPolicy.optionsMb)
+        assertFalse(MapCacheLimitPolicy.valid(100))
+        assertFalse(MapCacheLimitPolicy.valid(250))
         assertTrue(MapCacheLimitPolicy.valid(-1))
         assertFalse(MapCacheLimitPolicy.valid(0))
     }

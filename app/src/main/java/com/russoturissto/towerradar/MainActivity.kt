@@ -1029,15 +1029,15 @@ class MainActivity : Activity(), SensorEventListener {
             .setMessage("Выбрана: " + provider.name + ".\n\n" + explanation +
                 "\n\nTowerRadar не переключает выбранную карту на другую подложку.")
             .setItems(arrayOf(
-                if (capability == OfflineMapCapability.REGIONAL_DOWNLOAD)
-                    "Скачать офлайн-область этой карты"
-                else "Офлайн-область выбранной карты · возможности",
-                "Мои сохранённые области",
+                "Выбрать область на текущей карте",
+                "Мои загруженные офлайн-области",
+                "Мои отмеченные области кеша",
                 "Кеш просмотренных карт"))
             { _, selected -> when (selected) {
                 0 -> selectOfflineRadius()
                 1 -> listOfflineAreas()
-                2 -> showCacheSettings()
+                2 -> listMarkedCacheAreas()
+                3 -> showCacheSettings()
             } }.setNegativeButton("Назад") { _, _ -> showMapsMenu() }.show()
     }
 
@@ -1069,18 +1069,18 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun selectOfflineRadius() {
-        if (!OfflineMapPolicy.canCreateRegion(selectedMapProvider().id)) {
-            showSelectedMapOfflineLimit()
-            return
-        }
         val target = map?.cameraPosition?.target
         if (target == null) {
             Toast.makeText(this, "Сначала откройте карту", Toast.LENGTH_LONG).show()
             return
         }
         val radii = intArrayOf(10, 30)
-        KhakiDialogBuilder(this, palette).setTitle("Размер офлайн-области")
-            .setMessage("Радиус вокруг перекрестия или выделение по масштабу карты.")
+        KhakiDialogBuilder(this, palette).setTitle("Выбор области · " + selectedMapProvider().name)
+            .setMessage("Радиус вокруг перекрестия или рамка по масштабу текущей карты. " +
+                if (OfflineMapPolicy.canCreateRegion(selectedMapProvider().id))
+                    "Для этой подложки доступна предварительная загрузка."
+                else "Здесь можно отметить границы. Предварительная загрузка тайлов " +
+                    "из этого сервиса не запускается.")
             .setItems(arrayOf("Радиус 10 км", "Радиус 30 км",
                 "Выбрать область вручную")) { _, index ->
                 if (index == radii.size) startOfflineSelection()
@@ -1096,7 +1096,9 @@ class MainActivity : Activity(), SensorEventListener {
                 .setPositiveButton("Понятно", null).show()
             return
         }
-        selectOfflineZoomForBounds(target, bounds, radiusKm)
+        if (OfflineMapPolicy.canCreateRegion(selectedMapProvider().id))
+            selectOfflineZoomForBounds(target, bounds, radiusKm)
+        else showSelectedCacheArea(target, bounds)
     }
 
     private fun selectOfflineZoomForBounds(target: LatLng, bounds: OfflineBounds,
@@ -1127,10 +1129,6 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun startOfflineSelection() {
-        if (!OfflineMapPolicy.canCreateRegion(selectedMapProvider().id)) {
-            showSelectedMapOfflineLimit()
-            return
-        }
         if (map == null || offlineSelectionEnabled) return
         // Never replace the map chosen by the user as a side effect of selecting an area.
         offlineSelectionEnabled = true
@@ -1224,7 +1222,112 @@ class MainActivity : Activity(), SensorEventListener {
             Toast.makeText(this, "Не удалось определить границы", Toast.LENGTH_LONG).show()
             return
         }
-        selectOfflineZoomForBounds(centerPoint, bounds, 0)
+        if (OfflineMapPolicy.canCreateRegion(selectedMapProvider().id))
+            selectOfflineZoomForBounds(centerPoint, bounds, 0)
+        else showSelectedCacheArea(centerPoint, bounds)
+    }
+
+    /**
+     * Marking a region is not downloading it. Restricted providers only use
+     * normal viewport requests and whatever ambient cache their terms permit.
+     */
+    private fun showSelectedCacheArea(target: LatLng, bounds: OfflineBounds) {
+        val provider = selectedMapProvider()
+        val capability = OfflineMapPolicy.capability(provider.id)
+        val dimensionX = TowerData.distanceKm(
+            (bounds.north + bounds.south) / 2, bounds.west,
+            (bounds.north + bounds.south) / 2, bounds.east)
+        val dimensionY = TowerData.distanceKm(
+            bounds.south, (bounds.west + bounds.east) / 2,
+            bounds.north, (bounds.west + bounds.east) / 2)
+        val advice = when (capability) {
+            OfflineMapCapability.VIEWED_TILE_CACHE ->
+                "Тайлы карты, которые вы действительно открываете при обычном просмотре, " +
+                "могут временно оставаться в кеше. Просто выделение области НЕ скачивает " +
+                "все масштабы и не гарантирует работу без интернета. " +
+                if (provider.id == "yandex")
+                    "Кеш Яндекс Tiles API очищается не позднее 29 дней."
+                else "Срок хранения зависит от поставщика."
+            OfflineMapCapability.NO_REGION_DOWNLOAD ->
+                "Для этой карты TowerRadar не может предварительно скачать тайлы " +
+                "или гарантировать офлайн-доступ. Сохраняются только границы " +
+                "выбранного района, не содержимое карты."
+            OfflineMapCapability.REGIONAL_DOWNLOAD ->
+                "Для OpenFreeMap используется отдельный менеджер офлайн-областей."
+        }
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Выбранная область · " + provider.name)
+            .setMessage("Центр: " + CoordinateFormatter.format(
+                target.latitude, target.longitude) +
+                "\nРазмер: " + String.format(Locale.US, "%.1f × %.1f км", dimensionX, dimensionY) +
+                "\n\n" + advice +
+                "\n\nТекущая карта останется выбранной. " +
+                "Можно сохранить границы и позднее вернуться к просмотру района.")
+            .setPositiveButton("Сохранить границы") { _, _ ->
+                val prefs = getPreferences(Context.MODE_PRIVATE)
+                val saved = ViewedCacheAreaStore.append(
+                    prefs.getString("viewed_cache_areas", "[]").orEmpty(),
+                    ViewedCacheAreaStore.Area(
+                        provider.id, bounds, System.currentTimeMillis()))
+                prefs.edit().putString("viewed_cache_areas", saved).apply()
+                Toast.makeText(this,
+                    "Границы сохранены · загрузка тайлов не запускалась",
+                    Toast.LENGTH_LONG).show()
+            }
+            .setNeutralButton("Настройки кеша") { _, _ -> showCacheSettings() }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun listMarkedCacheAreas() {
+        val prefs = getPreferences(Context.MODE_PRIVATE)
+        val areas = ViewedCacheAreaStore.parse(
+            prefs.getString("viewed_cache_areas", "[]").orEmpty())
+        if (areas.isEmpty()) {
+            KhakiDialogBuilder(this, palette).setTitle("Отмеченные области")
+                .setMessage("Пока нет сохранённых границ. Выберите область на текущей карте. " +
+                    "Отметка сама по себе не загружает тайлы.")
+                .setPositiveButton("Выбрать область") { _, _ -> selectOfflineRadius() }
+                .setNegativeButton("Закрыть", null).show()
+            return
+        }
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Отмеченные области · не скачанные карты")
+            .setItems(areas.map { area ->
+                val name = MapSources.providers.firstOrNull { it.id == area.providerId }
+                    ?.name ?: area.providerId
+                val midLat = (area.bounds.north + area.bounds.south) / 2
+                val midLon = (area.bounds.west + area.bounds.east) / 2
+                name + " · " + CoordinateFormatter.format(midLat, midLon)
+            }.toTypedArray()) { _, index ->
+                val chosen = areas[index]
+                KhakiDialogBuilder(this, palette)
+                    .setTitle("Отмеченная область")
+                    .setMessage("Источник: " + chosen.providerId +
+                        "\nЗдесь сохранены только географические границы. " +
+                        "Наличие тайлов в кеше не подтверждено. " +
+                        "Перейти к району, не переключая выбранную карту?")
+                    .setPositiveButton("Показать на карте") { _, _ ->
+                        val midLat = (chosen.bounds.north + chosen.bounds.south) / 2
+                        val midLon = (chosen.bounds.west + chosen.bounds.east) / 2
+                        val focus = LatLng(midLat, midLon)
+                        map?.animateCamera(CameraUpdateFactory.newLatLng(focus), 400)
+                        yandexWebMap?.takeIf { it.showing }?.let {
+                            it.move(midLat, midLon, map?.cameraPosition?.zoom ?: 12.0)
+                        }
+                    }
+                    .setNeutralButton("Удалить отметку") { _, _ ->
+                        prefs.edit().putString("viewed_cache_areas",
+                            ViewedCacheAreaStore.remove(
+                                prefs.getString("viewed_cache_areas", "[]").orEmpty(),
+                                index)).apply()
+                        listMarkedCacheAreas()
+                    }
+                    .setNegativeButton("Назад") { _, _ -> listMarkedCacheAreas() }
+                    .show()
+            }
+            .setNegativeButton("Назад") { _, _ -> showOfflineAreaInfo() }
+            .show()
     }
 
     private fun confirmOfflineArea(target: LatLng, bounds: OfflineBounds,
@@ -1967,19 +2070,17 @@ class MainActivity : Activity(), SensorEventListener {
                 mapTileCache.detailedDiagnostics(MapSources.providers.getOrNull(providerIndex))
             )
             .setItems(arrayOf(
-                "Лимит: 100 МБ",
-                "Лимит: 250 МБ · рекомендуется",
                 "Лимит: 500 МБ",
                 "Без ограничений",
                 "Очистить загруженные карты"
             )) { _, selected ->
                 when (selected) {
-                    0, 1, 2, 3 -> mapTileCache.changeLimit(
+                    0, 1 -> mapTileCache.changeLimit(
                         MapTileCache.limitsMb[selected]
-                    ) { ok, message ->
+                    ) { _, message ->
                         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                     }
-                    4 -> KhakiDialogBuilder(this, palette)
+                    2 -> KhakiDialogBuilder(this, palette)
                         .setTitle("Очистить кеш карт?")
                         .setMessage("Ранее просмотренные участки могут потребовать " +
                             "новой загрузки через интернет. Сохранённые ключи, " +

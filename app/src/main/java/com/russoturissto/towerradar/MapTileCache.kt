@@ -58,11 +58,15 @@ class MapTileCache(private val activity: Activity) {
             provider.keyPref == null || provider.id == "yandex"
     }
 
-    fun limitMb(): Int = prefs.getInt("cache_limit_mb", 250)
-        .takeIf { MapCacheLimitPolicy.valid(it) } ?: 250
+    // Upgrade old 100/250 MB selections to the new minimum option: 500 MB.
+    fun limitMb(): Int = prefs.getInt("cache_limit_mb", 500)
+        .takeIf { MapCacheLimitPolicy.valid(it) } ?: 500
 
     /** Call immediately after MapLibre.getInstance, before creating MapView. */
     fun initialize() {
+        if (!MapCacheLimitPolicy.valid(prefs.getInt("cache_limit_mb", 500))) {
+            prefs.edit().putInt("cache_limit_mb", 500).apply()
+        }
         applyLimit()
         purgeOldTilesIfNeeded()
     }
