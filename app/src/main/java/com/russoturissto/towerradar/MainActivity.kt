@@ -156,6 +156,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var displayMode = DisplayModePolicy.STANDARD
     // Status and radio diagnostics are combined in topStatusPanel.
     private lateinit var mapTileCache: MapTileCache
+    private lateinit var offlineAreas: OfflineAreaManager
     private lateinit var mapView: MapView
     private var yandexWebMap: YandexWebMap? = null
     private lateinit var profileButton: Button
@@ -867,16 +868,16 @@ class MainActivity : Activity(), SensorEventListener {
         KhakiDialogBuilder(this, palette).setTitle("Карты и офлайн")
             .setItems(arrayOf("Картографические подложки · в панели Подробнее",
                 "Подключения API · Яндекс / MapTiler / OpenCellID",
-                "Кеш карты · лимиты и очистка",
-                "Офлайн-области · доступность и лицензии")) { _, n ->
+                "Офлайн-области и кеш · карты, рельеф, вышки",
+                "Кеш просмотренных карт · лимит и очистка")) { _, n ->
                 when (n) {
                     0 -> {
                         if (mapFullscreen) setMapFullscreen(false)
                         expandSheet(true)
                     }
                     1 -> showConnections()
-                    2 -> showCacheSettings()
-                    3 -> showOfflineAreaInfo()
+                    2 -> showOfflineAreaInfo()
+                    3 -> showCacheSettings()
                 }
             }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
     }
@@ -972,19 +973,179 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun showOfflineAreaInfo() {
-        val total = try { towerDatabase.count() } catch (_: Exception) { 0 }
         KhakiDialogBuilder(this, palette).setTitle("Офлайн-области")
-            .setMessage("В локальной базе вышек: " + total + " объектов.\n\n" +
-                "Ранее просмотренные участки карты могут открываться из кеша, " +
-                "когда это разрешено поставщиком. Области России и Украины " +
-                "пока нельзя скачивать целиком: публичные серверы OpenStreetMap " +
-                "не разрешают массовое предварительное скачивание, а для " +
-                "других источников нужны соответствующие офлайн-права.\n\n" +
-                "Здесь не выполняется скрытая загрузка областей или вышек. " +
-                "Для полноценных пакетов понадобится разрешённый офлайн-источник.")
-            .setPositiveButton("Понятно", null)
-            .setNeutralButton("Настройки кеша") { _, _ -> showCacheSettings() }
-            .show()
+            .setMessage("Одна область включает векторную карту OpenFreeMap на ВСЕХ " +
+                "выбранных масштабах, тайлы высот Mapzen и сохранённые вышки. " +
+                "Карты Яндекса и стандартные OSM-тайлы не скачиваются массово. " +
+                "Максимум 1800 тайлов в одном пакете; большие районы требуют " +
+                "меньшего масштаба или нескольких небольших областей.")
+            .setItems(arrayOf("Выбрать область вокруг центра карты",
+                "Мои сохранённые области", "Кеш просмотренных карт"))
+            { _, selected -> when (selected) {
+                0 -> selectOfflineRadius()
+                1 -> listOfflineAreas()
+                2 -> showCacheSettings()
+            } }.setNegativeButton("Назад") { _, _ -> showMapsMenu() }.show()
+    }
+
+    private fun selectOfflineRadius() {
+        val target = map?.cameraPosition?.target
+        if (target == null) {
+            Toast.makeText(this, "Сначала откройте карту", Toast.LENGTH_LONG).show()
+            return
+        }
+        val radii = intArrayOf(2, 5, 10, 20)
+        KhakiDialogBuilder(this, palette).setTitle("Размер офлайн-области")
+            .setMessage("Центр — постоянное перекрестие карты. " +
+                "Покрытие с небольшим запасом от границ.")
+            .setItems(radii.map { "Радиус $it км" }.toTypedArray()) { _, index ->
+                selectOfflineZoom(target, radii[index])
+            }.setNegativeButton("Назад") { _, _ -> showOfflineAreaInfo() }.show()
+    }
+
+    private fun selectOfflineZoom(target: LatLng, radiusKm: Int) {
+        val bounds = OfflineAreaPolicy.bounds(target.latitude, target.longitude, radiusKm)
+        if (bounds == null) {
+            KhakiDialogBuilder(this, palette).setTitle("Недоступный район")
+                .setMessage("Слишком близко к полюсам или к линии перемены дат. " +
+                    "Выберите меньший участок.")
+                .setPositiveButton("Понятно", null).show()
+            return
+        }
+        val zooms = intArrayOf(12, 14, 16, 18, 19)
+        val options = zooms.map { z ->
+            val count = OfflineAreaPolicy.countTiles(bounds, OfflineAreaPolicy.MIN_ZOOM, z)
+            "Масштабы 6–$z · $count тайлов" +
+                if (OfflineAreaPolicy.allowed(bounds, z)) "" else " · слишком много"
+        }.toTypedArray()
+        KhakiDialogBuilder(this, palette).setTitle("Детализация офлайн-карты")
+            .setMessage("Весь выбранный диапазон масштабов будет загружен полностью. " +
+                "Чем выше масштаб, тем больше данных. Показана предварительная оценка; " +
+                "готовность подтверждается после проверки реальных ресурсов.")
+            .setItems(options) { _, which ->
+                val zoom = zooms[which]
+                if (!OfflineAreaPolicy.allowed(bounds, zoom)) {
+                    KhakiDialogBuilder(this, palette).setTitle("Слишком большой пакет")
+                        .setMessage("Этот диапазон превысит безопасный лимит сервера. " +
+                            "Сократите радиус или выберите меньший масштаб.")
+                        .setPositiveButton("Изменить") { _, _ ->
+                            selectOfflineZoom(target, radiusKm)
+                        }.show()
+                } else confirmOfflineArea(target, bounds, radiusKm, zoom)
+            }.setNegativeButton("Назад") { _, _ -> selectOfflineRadius() }.show()
+    }
+
+    private fun confirmOfflineArea(target: LatLng, bounds: OfflineBounds,
+                                   radiusKm: Int, zoom: Int) {
+        val count = OfflineAreaPolicy.countTiles(bounds, OfflineAreaPolicy.MIN_ZOOM, zoom)
+        KhakiDialogBuilder(this, palette).setTitle("Сохранить офлайн-область?")
+            .setMessage("Центр: " + CoordinateFormatter.format(target.latitude, target.longitude) +
+                "\nРадиус: $radiusKm км · масштабы: 6–$zoom" +
+                "\nКарта: до $count тайлов (OpenFreeMap)" +
+                "\nРельеф: Mapzen Terrarium" +
+                "\nВышки: существующая локальная база; при наличии сети — обновление района." +
+                "\n\nПакет будет полностью пригоден только после окончания загрузки " +
+                "карты и рельефа. Скачивание можно продолжить позднее.")
+            .setPositiveButton("Сохранить") { _, _ ->
+                val name = "Область " +
+                    String.format(Locale.US, "%.3f, %.3f", target.latitude, target.longitude) +
+                    " · $radiusKm км"
+                val offlineProvider = MapSources.providers.first { it.id == "openfreemap-offline" }
+                useMapChoice(offlineProvider)
+                offlineAreas.create(name, bounds, radiusKm, zoom) { state ->
+                    if (!isDestroyed && !isFinishing && state.complete) {
+                        Toast.makeText(this, state.message, Toast.LENGTH_LONG).show()
+                    } else if (!isDestroyed && !isFinishing &&
+                        (state.message.startsWith("Ошибка") ||
+                            state.message.startsWith("Лимит") ||
+                            state.message.startsWith("Не удалось"))) {
+                        Toast.makeText(this, state.message, Toast.LENGTH_LONG).show()
+                    }
+                }
+                // Towers use their existing global SQLite cache and user-created local store.
+                apiExecutor.execute {
+                    try {
+                        val towers = fetch(target.latitude, target.longitude, radiusKm)
+                        towerDatabase.merge(towers)
+                        runOnUiThread {
+                            if (!isDestroyed && !isFinishing) {
+                                sites = towerDatabase.all()
+                                updateOperatorChoices()
+                                showPins()
+                                Toast.makeText(this, "Вышки района сохранены", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } catch (_: Exception) { /* Existing towers remain available offline. */ }
+                }
+                Toast.makeText(this, "Загрузка запущена. Статус — в «Мои области».",
+                    Toast.LENGTH_LONG).show()
+            }.setNegativeButton("Отмена", null).show()
+    }
+
+    private fun listOfflineAreas() {
+        offlineAreas.list { areas, error ->
+            if (isFinishing || isDestroyed) return@list
+            if (error != null || areas.isEmpty()) {
+                KhakiDialogBuilder(this, palette).setTitle("Мои офлайн-области")
+                    .setMessage(error ?: "Сохранённых областей пока нет.")
+                    .setPositiveButton("Создать") { _, _ -> selectOfflineRadius() }
+                    .setNegativeButton("Назад", null).show()
+            } else {
+                KhakiDialogBuilder(this, palette).setTitle("Мои офлайн-области")
+                    .setItems(areas.map {
+                        it.name + " · до масштаба " + it.maxZoom
+                    }.toTypedArray()) { _, index -> offlineAreaActions(areas[index]) }
+                    .setNegativeButton("Назад") { _, _ -> showOfflineAreaInfo() }.show()
+            }
+        }
+    }
+
+    private fun offlineAreaActions(area: OfflineAreaManager.Area) {
+        offlineAreas.status(area) { description ->
+            if (isFinishing || isDestroyed) return@status
+            KhakiDialogBuilder(this, palette).setTitle(area.name)
+                .setMessage(description + "\nМасштабы 6–${area.maxZoom}. " +
+                    "В офлайн-режиме используйте подложку OpenFreeMap.")
+                .setItems(arrayOf("Показать область на карте",
+                    "Продолжить загрузку карты и рельефа",
+                    "Приостановить загрузку",
+                    "Удалить область")) { _, selected ->
+                    when (selected) {
+                        0 -> {
+                            MapSources.providers.firstOrNull {
+                                it.id == "openfreemap-offline"
+                            }?.let(::useMapChoice)
+                            map?.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                                LatLng((area.bounds.north + area.bounds.south) / 2,
+                                    (area.bounds.east + area.bounds.west) / 2),
+                                (area.maxZoom - 2).coerceAtLeast(6).toDouble()), 350)
+                        }
+                        1 -> {
+                            offlineAreas.resume(area) { state ->
+                                if (!isFinishing && !isDestroyed &&
+                                    (state.complete || state.message.startsWith("Ошибка") ||
+                                        state.message.startsWith("Лимит"))) {
+                                    Toast.makeText(this, state.message, Toast.LENGTH_LONG).show()
+                                }
+                            }
+                            Toast.makeText(this, "Продолжаем загрузку", Toast.LENGTH_SHORT).show()
+                        }
+                        2 -> {
+                            offlineAreas.pause(area)
+                            Toast.makeText(this, "Загрузка приостановлена", Toast.LENGTH_SHORT).show()
+                        }
+                        3 -> KhakiDialogBuilder(this, palette)
+                            .setTitle("Удалить офлайн-область?")
+                            .setMessage("Карта и данные высот этой области будут удалены. " +
+                                "Общая база вышек и пользовательские записи сохранятся.")
+                            .setPositiveButton("Удалить") { _, _ ->
+                                offlineAreas.delete(area) { _, msg ->
+                                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                                }
+                            }.setNegativeButton("Отмена", null).show()
+                    }
+                }.setNegativeButton("Назад") { _, _ -> listOfflineAreas() }.show()
+        }
     }
 
     private fun showUpdateMenu() {
@@ -2189,9 +2350,16 @@ class MainActivity : Activity(), SensorEventListener {
         MapLibre.getInstance(this)
         mapTileCache = MapTileCache(this)
         mapTileCache.initialize()
+        offlineAreas = OfflineAreaManager(this)
         towerDatabase = TowerDatabase(this)
         userTowerStore = UserTowerStore(this)
-        HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
+        // Strictly cap OpenFreeMap offline tile download concurrency to four.
+        val mapDispatcher = okhttp3.Dispatcher().apply {
+            maxRequests = 4
+            maxRequestsPerHost = 4
+        }
+        HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder()
+            .dispatcher(mapDispatcher).addInterceptor { chain ->
             val request = chain.request()
             val url = request.url.toString()
             if (url.contains("tile") || url.contains("tiles.api-maps.yandex.ru") ||

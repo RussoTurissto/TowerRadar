@@ -14,7 +14,6 @@ data class TerrainProfile(val samples: List<TerrainSample>, val distanceKm: Doub
 
 /** The elevations are ground elevations above sea level, not antenna heights. */
 object TerrainProfileClient {
-    private const val DAYS_30 = 30L * 24L * 60L * 60L * 1000L
     private fun fmt(v: Double) = String.format(Locale.US, "%.6f", v)
 
     fun coordinates(aLat: Double, aLon: Double, bLat: Double, bLon: Double,
@@ -57,8 +56,7 @@ object TerrainProfileClient {
         val prefs = context.getSharedPreferences("terrain_profiles", Context.MODE_PRIVATE)
         try {
             val cached = prefs.getString(key, null)?.let(::JSONObject)
-            if (cached != null && System.currentTimeMillis() -
-                cached.optLong("time") in 0L..DAYS_30) {
+            if (cached != null) {
                 val array = cached.getJSONArray("samples")
                 val list = (0 until array.length()).map { i ->
                     val obj = array.getJSONObject(i)
@@ -69,6 +67,10 @@ object TerrainProfileClient {
                     return TerrainProfile(list, distance, cached.optString("source") + " · кеш")
             }
         } catch (_: Exception) { }
+
+        // Reuse fully downloaded Mapzen DEM areas for arbitrary new lines,
+        // without a network request or an exact point-to-point cache match.
+        OfflineTerrainStore(context).profile(aLat, aLon, bLat, bLon)?.let { return it }
 
         val locations = fmt(aLat) + "," + fmt(aLon) + "|" + fmt(bLat) + "," + fmt(bLon)
         var lastError: Exception? = null

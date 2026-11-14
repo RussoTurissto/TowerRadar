@@ -6,6 +6,7 @@ object AttributionUiPolicy {
     fun creditLink(providerId: String): String? = when {
         providerId == "yandex" || providerId.startsWith("yandex-js-") ->
             "https://yandex.ru/legal/maps_api/"
+        providerId == "openfreemap-offline" -> "https://openfreemap.org/"
         providerId.startsWith("maptiler-") -> "https://www.maptiler.com/copyright/"
         providerId.startsWith("google-") -> "https://www.google.com/maps"
         else -> null

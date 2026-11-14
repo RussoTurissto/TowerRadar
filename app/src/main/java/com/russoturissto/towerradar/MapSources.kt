@@ -20,6 +20,9 @@ data class MapProvider(
 
 object MapSources {
     val allProviders = listOf(
+        MapProvider("openfreemap-offline", "OpenFreeMap · офлайн", 
+            OfflineAreaPolicy.OFFLINE_STYLE,
+            "© OpenFreeMap · © OpenStreetMap contributors"),
         MapProvider("osmfr", "OSM France · местные названия",
             "https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png",
             "© OpenStreetMap contributors · OpenStreetMap France"),
@@ -86,6 +89,8 @@ object MapSources {
     fun style(provider: MapProvider, key: String = "", session: String = ""): Style.Builder {
         // MapTiler satellite imagery is a licensed raster tileset; other
         // MapTiler modes are published, standard MapLibre vector styles.
+        if (provider.id == "openfreemap-offline")
+            return Style.Builder().fromUri(OfflineAreaPolicy.OFFLINE_STYLE)
         if (mapTiler(provider) && provider.id != "maptiler-satellite")
             return Style.Builder().fromUri(tileTemplate(provider, key))
         val tileSet = TileSet("2.2.0", tileTemplate(provider, key, session))
@@ -122,7 +127,8 @@ object MapSources {
 
     fun reachable(provider: MapProvider, lat: Double, lon: Double, key: String = ""): Boolean {
         if (provider.keyPref != null && key.isBlank()) return false
-        if (provider.id.startsWith("google-") || yandexWeb(provider) || mapTiler(provider))
+        if (provider.id == "openfreemap-offline" ||
+            provider.id.startsWith("google-") || yandexWeb(provider) || mapTiler(provider))
             return false // session, WebView or vector style, not directly testable as PNG
         val connection = (URL(sampleTileUrl(provider, lat, lon, key)).openConnection() as HttpURLConnection)
         connection.connectTimeout = 4500
