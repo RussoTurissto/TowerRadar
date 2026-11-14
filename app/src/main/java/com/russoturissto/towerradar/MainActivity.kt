@@ -162,6 +162,10 @@ class MainActivity : Activity(), SensorEventListener {
     // Status and radio diagnostics are combined in topStatusPanel.
     private lateinit var mapTileCache: MapTileCache
     private lateinit var offlineAreas: OfflineAreaManager
+    private var offlineSelectionFrame: OfflineSelectionFrame? = null
+    private var offlineSelectionControls: LinearLayout? = null
+    private var offlineSelectionInfo: TextView? = null
+    private var offlineSelectionEnabled = false
     private lateinit var mapView: MapView
     private var yandexWebMap: YandexWebMap? = null
     private lateinit var profileButton: Button
@@ -1002,12 +1006,13 @@ class MainActivity : Activity(), SensorEventListener {
             Toast.makeText(this, "Сначала откройте карту", Toast.LENGTH_LONG).show()
             return
         }
-        val radii = intArrayOf(2, 5, 10, 20)
+        val radii = intArrayOf(10, 30)
         KhakiDialogBuilder(this, palette).setTitle("Размер офлайн-области")
-            .setMessage("Центр — постоянное перекрестие карты. " +
-                "Покрытие с небольшим запасом от границ.")
-            .setItems(radii.map { "Радиус $it км" }.toTypedArray()) { _, index ->
-                selectOfflineZoom(target, radii[index])
+            .setMessage("Радиус вокруг перекрестия или выделение по масштабу карты.")
+            .setItems(arrayOf("Радиус 10 км", "Радиус 30 км",
+                "Выбрать область вручную")) { _, index ->
+                if (index == radii.size) startOfflineSelection()
+                else selectOfflineZoom(target, radii[index])
             }.setNegativeButton("Назад") { _, _ -> showOfflineAreaInfo() }.show()
     }
 
@@ -1015,32 +1020,138 @@ class MainActivity : Activity(), SensorEventListener {
         val bounds = OfflineAreaPolicy.bounds(target.latitude, target.longitude, radiusKm)
         if (bounds == null) {
             KhakiDialogBuilder(this, palette).setTitle("Недоступный район")
-                .setMessage("Слишком близко к полюсам или к линии перемены дат. " +
-                    "Выберите меньший участок.")
+                .setMessage("Выберите другой район или уменьшите масштаб карты.")
                 .setPositiveButton("Понятно", null).show()
             return
         }
-        val zooms = intArrayOf(12, 14, 16, 18, 19)
+        selectOfflineZoomForBounds(target, bounds, radiusKm)
+    }
+
+    private fun selectOfflineZoomForBounds(target: LatLng, bounds: OfflineBounds,
+                                           radiusKm: Int) {
+        val zooms = intArrayOf(10, 12, 14, 16, 18, 19)
         val options = zooms.map { z ->
             val count = OfflineAreaPolicy.countTiles(bounds, OfflineAreaPolicy.MIN_ZOOM, z)
             "Масштабы 6–$z · $count тайлов" +
                 if (OfflineAreaPolicy.allowed(bounds, z)) "" else " · слишком много"
         }.toTypedArray()
         KhakiDialogBuilder(this, palette).setTitle("Детализация офлайн-карты")
-            .setMessage("Весь выбранный диапазон масштабов будет загружен полностью. " +
-                "Чем выше масштаб, тем больше данных. Показана предварительная оценка; " +
-                "готовность подтверждается после проверки реальных ресурсов.")
+            .setMessage("Сохраняются все уровни выбранного диапазона. " +
+                "Границы ручного выделения определены положением и масштабом карты.")
             .setItems(options) { _, which ->
                 val zoom = zooms[which]
                 if (!OfflineAreaPolicy.allowed(bounds, zoom)) {
                     KhakiDialogBuilder(this, palette).setTitle("Слишком большой пакет")
-                        .setMessage("Этот диапазон превысит безопасный лимит сервера. " +
-                            "Сократите радиус или выберите меньший масштаб.")
-                        .setPositiveButton("Изменить") { _, _ ->
-                            selectOfflineZoom(target, radiusKm)
+                        .setMessage("Лимит сервера превышен. Увеличьте масштаб карты, " +
+                            "уменьшив выбранную область, или ограничьте детализацию.")
+                        .setPositiveButton("Изменить область") { _, _ ->
+                            if (radiusKm == 0) startOfflineSelection()
+                            else selectOfflineRadius()
                         }.show()
                 } else confirmOfflineArea(target, bounds, radiusKm, zoom)
-            }.setNegativeButton("Назад") { _, _ -> selectOfflineRadius() }.show()
+            }.setNegativeButton("Назад") { _, _ ->
+                if (radiusKm == 0) startOfflineSelection() else selectOfflineRadius()
+            }.show()
+    }
+
+    private fun startOfflineSelection() {
+        val current = map ?: return
+        if (offlineSelectionEnabled) return
+        // Preview the actual offline basemap, not a licensed online Yandex/OSM layer.
+        MapSources.providers.firstOrNull { it.id == "openfreemap-offline" }
+            ?.let(::useMapChoice)
+        offlineSelectionEnabled = true
+        details.visibility = View.GONE
+        if (actionMenuExpanded) setActionMenuExpanded(false)
+        val frame = OfflineSelectionFrame(this)
+        offlineSelectionFrame = frame
+        rootView.addView(frame, 2, FrameLayout.LayoutParams(-1, -1))
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = rounded(palette.surface, 16)
+            elevation = dp(12).toFloat()
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        offlineSelectionControls = controls
+        val info = text("Переместите или масштабируйте карту", 12f, palette.text).apply {
+            gravity = Gravity.CENTER
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        }
+        offlineSelectionInfo = info
+        controls.addView(info, LinearLayout.LayoutParams(-1, -2).apply {
+            bottomMargin = dp(8)
+        })
+        val actions = row()
+        controls.addView(actions)
+        val cancel = styledButton("Отмена", 13f)
+        val save = styledButton("Выбрать", 13f, true)
+        actions.addView(cancel, LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+            rightMargin = dp(6)
+        })
+        actions.addView(save, LinearLayout.LayoutParams(0, dp(44), 1f))
+        cancel.setOnClickListener { finishOfflineSelection(false) }
+        save.setOnClickListener { finishOfflineSelection(true) }
+        rootView.addView(controls, FrameLayout.LayoutParams(-1, -2,
+            Gravity.BOTTOM).apply {
+            leftMargin = dp(15) + systemLeftInset
+            rightMargin = dp(15) + systemRightInset
+            bottomMargin = systemBottomInset + dp(20)
+        })
+        applyResponsiveLayout(false)
+        rootView.post { updateOfflineSelectionInfo() }
+    }
+
+    private fun currentOfflineSelection(): OfflineBounds? {
+        val current = map ?: return null
+        val frame = offlineSelectionFrame ?: return null
+        if (frame.width < 20 || frame.height < 20) return null
+        val area = frame.selectionRect()
+        val corners = listOf(
+            android.graphics.PointF(area.left, area.top),
+            android.graphics.PointF(area.right, area.top),
+            android.graphics.PointF(area.right, area.bottom),
+            android.graphics.PointF(area.left, area.bottom)
+        ).map { p ->
+            current.projection.fromScreenLocation(p).let { it.latitude to it.longitude }
+        }
+        return OfflineAreaPolicy.selectedBounds(corners)
+    }
+
+    private fun updateOfflineSelectionInfo() {
+        if (!offlineSelectionEnabled) return
+        val info = offlineSelectionInfo ?: return
+        val area = currentOfflineSelection()
+        if (area == null) {
+            info.text = "Область недоступна в этом месте. Переместите карту."
+            return
+        }
+        val width = TowerData.distanceKm((area.north + area.south) / 2,
+            area.west, (area.north + area.south) / 2, area.east)
+        val height = TowerData.distanceKm(area.south,
+            (area.west + area.east) / 2, area.north, (area.west + area.east) / 2)
+        val currentZoom = map?.cameraPosition?.zoom?.toInt()?.coerceIn(6, 19) ?: 12
+        val count = OfflineAreaPolicy.countTiles(area, 6, currentZoom)
+        info.text = String.format(Locale.US,
+            "Область: %.1f × %.1f км · масштаб %d · до %d тайлов",
+            width, height, currentZoom, count)
+    }
+
+    private fun finishOfflineSelection(save: Boolean) {
+        val bounds = if (save) currentOfflineSelection() else null
+        val centerPoint = map?.cameraPosition?.target
+        offlineSelectionEnabled = false
+        offlineSelectionControls?.let(rootView::removeView)
+        offlineSelectionFrame?.let(rootView::removeView)
+        offlineSelectionControls = null
+        offlineSelectionFrame = null
+        offlineSelectionInfo = null
+        applyResponsiveLayout(false)
+        if (!save) return
+        if (bounds == null || centerPoint == null) {
+            Toast.makeText(this, "Не удалось определить границы", Toast.LENGTH_LONG).show()
+            return
+        }
+        selectOfflineZoomForBounds(centerPoint, bounds, 0)
     }
 
     private fun confirmOfflineArea(target: LatLng, bounds: OfflineBounds,
@@ -1048,7 +1159,8 @@ class MainActivity : Activity(), SensorEventListener {
         val count = OfflineAreaPolicy.countTiles(bounds, OfflineAreaPolicy.MIN_ZOOM, zoom)
         KhakiDialogBuilder(this, palette).setTitle("Сохранить офлайн-область?")
             .setMessage("Центр: " + CoordinateFormatter.format(target.latitude, target.longitude) +
-                "\nРадиус: $radiusKm км · масштабы: 6–$zoom" +
+                "\n" + (if (radiusKm == 0) "Область по масштабу карты"
+                    else "Радиус: $radiusKm км") + " · масштабы: 6–$zoom" +
                 "\nКарта: до $count тайлов (OpenFreeMap)" +
                 "\nРельеф: Mapzen Terrarium" +
                 "\nВышки: существующая локальная база; при наличии сети — обновление района." +
@@ -1057,7 +1169,7 @@ class MainActivity : Activity(), SensorEventListener {
             .setPositiveButton("Сохранить") { _, _ ->
                 val name = "Область " +
                     String.format(Locale.US, "%.3f, %.3f", target.latitude, target.longitude) +
-                    " · $radiusKm км"
+                    (if (radiusKm == 0) " · вручную" else " · $radiusKm км")
                 val offlineProvider = MapSources.providers.first { it.id == "openfreemap-offline" }
                 useMapChoice(offlineProvider)
                 offlineAreas.create(name, bounds, radiusKm, zoom) { state ->
@@ -1074,7 +1186,15 @@ class MainActivity : Activity(), SensorEventListener {
                 // Towers use their existing global SQLite cache and user-created local store.
                 apiExecutor.execute {
                     try {
-                        val towers = fetch(target.latitude, target.longitude, radiusKm)
+                        val scanRadius = if (radiusKm == 0) {
+                            val a = TowerData.distanceKm(target.latitude, target.longitude,
+                                bounds.north, bounds.east)
+                            val b = TowerData.distanceKm(target.latitude, target.longitude,
+                                bounds.south, bounds.west)
+                            kotlin.math.ceil(maxOf(a, b)).toInt().coerceIn(1, 60)
+                        } else radiusKm
+                        val towers = fetch(target.latitude, target.longitude, scanRadius)
+                            .filter { bounds.contains(it.latitude, it.longitude) }
                         towerDatabase.merge(towers)
                         runOnUiThread {
                             if (!isDestroyed && !isFinishing) {
@@ -2682,7 +2802,8 @@ class MainActivity : Activity(), SensorEventListener {
                 else -> useMapChoice(saved) // Google requires a fresh session token.
             }
             ready.addOnMapClickListener { tapped ->
-                if (isChoosingCrosshair) {
+                if (offlineSelectionEnabled) true
+                else if (isChoosingCrosshair) {
                     ready.animateCamera(CameraUpdateFactory.newLatLng(tapped), 250)
                     true
                 } else {
@@ -2692,11 +2813,13 @@ class MainActivity : Activity(), SensorEventListener {
             }
             ready.addOnCameraMoveListener {
                 updateMapCenterCoordinates()
+                updateOfflineSelectionInfo()
                 if (isChoosingCrosshair) updateCrosshairCoordinates()
                 northIndicator.setMapBearing(ready.cameraPosition.bearing)
             }
             ready.addOnCameraIdleListener {
                 updateMapCenterCoordinates()
+                updateOfflineSelectionInfo()
                 persistLastCamera(force = true)
                 updateOverlays()
                 if (isChoosingCrosshair) updateCrosshairCoordinates()
@@ -3567,7 +3690,8 @@ class MainActivity : Activity(), SensorEventListener {
         expandedSignalRow.visibility = if (sheetExpanded) View.VISIBLE else View.GONE
         signalDetails.visibility = if (sheetExpanded) View.VISIBLE else View.GONE
         sheetExtra.visibility = if (sheetExpanded) View.VISIBLE else View.GONE
-        sheetView.visibility = if (mapFullscreen || isChoosingCrosshair) View.GONE else View.VISIBLE
+        sheetView.visibility = if (mapFullscreen || isChoosingCrosshair || offlineSelectionEnabled)
+            View.GONE else View.VISIBLE
 
         topHeader.layoutParams = (topHeader.layoutParams as FrameLayout.LayoutParams).apply {
             width = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -3580,7 +3704,7 @@ class MainActivity : Activity(), SensorEventListener {
             rightMargin = systemRightInset + dp(10) + sideWidth
         }
         floatingRail.visibility = if (mapFullscreen || isChoosingCrosshair ||
-            (sheetExpanded && !isWide)) View.GONE else View.VISIBLE
+            offlineSelectionEnabled || (sheetExpanded && !isWide)) View.GONE else View.VISIBLE
         if ((mapFullscreen || isChoosingCrosshair || sheetExpanded) && actionMenuExpanded) {
             actionMenuExpanded = false
             actionHeightRow.visibility = View.GONE
@@ -3778,6 +3902,7 @@ class MainActivity : Activity(), SensorEventListener {
     @Deprecated("Deprecated by Android")
     override fun onBackPressed() {
         if (directionPanel != null) hideDirectionPanel()
+        else if (offlineSelectionEnabled) finishOfflineSelection(false)
         else if (isChoosingCrosshair) finishCrosshairMode(false)
         else if (sheetExpanded) expandSheet(false)
         else super.onBackPressed()

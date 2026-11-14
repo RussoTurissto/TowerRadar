@@ -16,12 +16,27 @@ object OfflineAreaPolicy {
 
     fun bounds(lat: Double, lon: Double, radiusKm: Int): OfflineBounds? {
         if (!lat.isFinite() || !lon.isFinite() || lat !in -80.0..80.0 ||
-            lon !in -180.0..180.0 || radiusKm !in listOf(2, 5, 10, 20)) return null
+            lon !in -180.0..180.0 || radiusKm !in listOf(10, 30)) return null
         val dLat = radiusKm * 1.08 / 111.1
         val dLon = dLat / cos(Math.toRadians(lat)).coerceAtLeast(0.1)
         if (lat - dLat < -85.0 || lat + dLat > 85.0 ||
             lon - dLon < -180.0 || lon + dLon > 180.0) return null
         return OfflineBounds(lat - dLat, lon - dLon, lat + dLat, lon + dLon)
+    }
+
+    /** Axis-aligned geographic coverage of the actual on-screen selection frame. */
+    fun selectedBounds(corners: List<Pair<Double, Double>>): OfflineBounds? {
+        if (corners.size != 4 || corners.any {
+                !it.first.isFinite() || !it.second.isFinite() ||
+                    it.first !in -85.0..85.0 || it.second !in -180.0..180.0
+            }) return null
+        val south = corners.minOf { it.first }
+        val north = corners.maxOf { it.first }
+        val west = corners.minOf { it.second }
+        val east = corners.maxOf { it.second }
+        if (north - south <= 0.00001 || east - west <= 0.00001 ||
+            east - west >= 180.0) return null
+        return OfflineBounds(south, west, north, east)
     }
 
     fun tileX(lon: Double, z: Int): Int {

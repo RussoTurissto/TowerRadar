@@ -25,7 +25,10 @@ class OfflineTerrainStore(private val context: Context) {
                         val error: String? = null)
 
     private fun directory(id: Long) = File(root, id.toString())
-    private fun terrainZoom(radiusKm: Int) = if (radiusKm <= 5) 12 else 11
+    private fun terrainZoom(bounds: OfflineBounds): Int =
+        (12 downTo 7).firstOrNull { z ->
+            OfflineAreaPolicy.countTiles(bounds, z, z) <= 180L
+        } ?: 7
 
     fun isComplete(id: Long): Boolean {
         return try {
@@ -60,7 +63,7 @@ class OfflineTerrainStore(private val context: Context) {
                  report: (Progress) -> Unit) {
         cancelled.remove(id)
         executor.execute {
-            val z = terrainZoom(radiusKm)
+            val z = terrainZoom(bounds)
             val x0 = OfflineAreaPolicy.tileX(bounds.west, z)
             val x1 = OfflineAreaPolicy.tileX(bounds.east, z)
             val y0 = OfflineAreaPolicy.tileY(bounds.north, z)
