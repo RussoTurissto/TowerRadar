@@ -19,6 +19,12 @@ class ReleaseFeedTest {
         assertNull(ReleaseFeed.parse(json, false))
         assertEquals("0.24.0", ReleaseFeed.parse(json, true)?.version)
     }
+    @Test fun missingDigestIsNotInstallable() {
+        val json = """[{"tag_name":"v0.26.0","prerelease":true,
+          "assets":[{"name":"TowerRadar-v0.26.0.apk","size":53000000,
+           "browser_download_url":"https://github.com/RussoTurissto/TowerRadar/releases/download/v0.26.0/TowerRadar-v0.26.0.apk"}]}]"""
+        assertNull(ReleaseFeed.parse(json, true))
+    }
     @Test fun untrustedFileIsNotAccepted() {
         val json = """[{"tag_name":"v0.24.0","prerelease":true,
           "assets":[{"name":"malware.apk","size":50000000,

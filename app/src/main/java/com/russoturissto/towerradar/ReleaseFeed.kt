@@ -51,7 +51,7 @@ object ReleaseFeed {
                 if (filename != "TowerRadar-" + tag + ".apk") continue
                 val digest = file.optString("digest").takeIf {
                     it.matches(Regex("sha256:[0-9a-fA-F]{64}"))
-                }
+                } ?: continue
                 return TowerRelease(tag.removePrefix("v"), obj.optString("name"),
                     prerelease, url, file.optLong("size"), digest,
                     "https://github.com/" + REPO + "/releases/tag/" + tag)

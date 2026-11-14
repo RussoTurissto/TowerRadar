@@ -206,6 +206,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var detailBody: TextView
     private lateinit var detailCoordinates: TextView
     private var autoUpdateAttempted = false
+    private var pendingOtaInstall: TowerRelease? = null
 
     private var map: MapLibreMap? = null
     private var styled = false
@@ -1153,7 +1154,10 @@ class MainActivity : Activity(), SensorEventListener {
             .setMessage("Установлена версия " + currentVersionName() + ".\n\n" +
                 "Стабильная версия проходит ручную публикацию после тестирования. " +
                 "Тестовые APK доступны отдельно и могут содержать ошибки. " +
-                "Проверка выполняется только по нажатию; фоновых уведомлений нет.")
+                "При запуске проверяем наличие новой тестовой версии; " +
+                "в настройках можно проверить любой канал вручную. " +
+                "APK скачивается и проверяется внутри приложения, " +
+                "Android подтверждает установку.")
             .setItems(arrayOf("Проверить стабильную версию",
                 "Проверить тестовую версию",
                 "Сборки GitHub Actions · тесты до релиза")) { _, n ->
@@ -1200,31 +1204,160 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun checkReleaseOnLaunch() {
+        apiExecutor.execute {
+            val available = try {
+                ReleaseFeed.query(true) ?: ReleaseFeed.query(false)
+            } catch (_: Exception) { null }
+            runOnUiThread {
+                if (isFinishing || isDestroyed || available == null ||
+                    !ReleaseFeed.isNewer(available.version, currentVersionName())) return@runOnUiThread
+                val prefs = getPreferences(Context.MODE_PRIVATE)
+                if (prefs.getString("ota_offered_version", "") == available.version) return@runOnUiThread
+                prefs.edit().putString("ota_offered_version", available.version).apply()
+                KhakiDialogBuilder(this, palette)
+                    .setTitle("Доступно обновление " + available.version)
+                    .setMessage("Доступна новая версия TowerRadar (GitHub Releases). " +
+                        "Скачать, проверить и установить её можно прямо в приложении. " +
+                        "Текущие данные сохраняются при установке обновления тем же ключом.")
+                    .setPositiveButton("Открыть обновление") { _, _ ->
+                        downloadReleaseApk(available)
+                    }.setNegativeButton("Позже", null).show()
+            }
+        }
+    }
+
     private fun downloadReleaseApk(release: TowerRelease) {
-        try {
-            val manager = getSystemService(Context.DOWNLOAD_SERVICE)
-                as android.app.DownloadManager
-            val request = android.app.DownloadManager.Request(Uri.parse(release.apkUrl))
-                .setTitle("TowerRadar " + release.version)
-                .setDescription("Подписанный APK из GitHub Releases")
-                .setMimeType("application/vnd.android.package-archive")
-                .setNotificationVisibility(
-                    android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                .setAllowedOverMetered(true)
-            manager.enqueue(request)
-            KhakiDialogBuilder(this, palette).setTitle("Загрузка начата")
-                .setMessage("После завершения откройте APK из уведомления " +
-                    "загрузчика Android и подтвердите установку. " +
-                    "Android может попросить разрешить установку из этого источника. " +
-                    "Обновление не устанавливается скрытно.")
-                .setPositiveButton("Понятно", null).show()
-        } catch (_: Exception) {
-            KhakiDialogBuilder(this, palette).setTitle("Ошибка загрузки")
-                .setMessage("Не удалось передать APK системному загрузчику. " +
-                    "Можно открыть страницу релиза через браузер.")
-                .setPositiveButton("Открыть GitHub") { _, _ ->
-                    openExternal(release.releasePage)
-                }.setNegativeButton("Закрыть", null).show()
+        if (release.digest == null) {
+            KhakiDialogBuilder(this, palette).setTitle("Релиз не проверен")
+                .setMessage("Нет контрольной суммы SHA-256. Установка через приложение заблокирована.")
+                .setPositiveButton("Закрыть", null).show()
+            return
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), dp(6), dp(8), dp(9))
+        }
+        val intro = text("TowerRadar " + release.version +
+            " · " + String.format(Locale.US, "%.1f МБ", release.apkBytes / 1048576.0) +
+            "\nЗагрузка с GitHub · проверка SHA-256 и сертификата перед установкой.",
+            13f, palette.secondary)
+        content.addView(intro)
+        val bar = ProgressBar(this, null,
+            android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            progressTintList = ColorStateList.valueOf(palette.olive)
+        }
+        content.addView(bar, LinearLayout.LayoutParams(-1, dp(5)).apply {
+            topMargin = dp(14)
+            bottomMargin = dp(10)
+        })
+        val state = text("Пока не загружено", 13f, palette.text)
+        content.addView(state)
+        val action = styledButton("Скачать обновление", 14f, true)
+        content.addView(action, LinearLayout.LayoutParams(-1, dp(48)).apply {
+            topMargin = dp(12)
+        })
+        val dialog = KhakiDialogBuilder(this, palette)
+            .setTitle("Обновление TowerRadar")
+            .setView(content).setNegativeButton("Позже", null).show()
+        val handler = Handler(Looper.getMainLooper())
+        val watcher = object : Runnable {
+            override fun run() {
+                if (!dialog.isShowing || isFinishing || isDestroyed) return
+                val progress = try { TowerApkInstaller.status(this@MainActivity, release) }
+                    catch (_: Exception) { null }
+                when (progress?.state) {
+                    android.app.DownloadManager.STATUS_RUNNING,
+                    android.app.DownloadManager.STATUS_PENDING,
+                    android.app.DownloadManager.STATUS_PAUSED -> {
+                        val pct = if (progress.total > 0)
+                            (progress.downloaded * 100L / progress.total).toInt().coerceIn(0, 100)
+                            else 0
+                        bar.isIndeterminate = progress.total <= 0
+                        bar.progress = pct
+                        state.text = if (progress.total > 0) "Загрузка: $pct%"
+                            else "Загрузка с GitHub…"
+                        action.text = "Загрузка…"
+                        action.isEnabled = false
+                    }
+                    android.app.DownloadManager.STATUS_SUCCESSFUL -> {
+                        bar.isIndeterminate = false
+                        bar.progress = 100
+                        state.text = "APK загружен · требуется проверка"
+                        action.text = "Проверить и установить"
+                        action.isEnabled = true
+                    }
+                    android.app.DownloadManager.STATUS_FAILED -> {
+                        bar.isIndeterminate = false
+                        bar.progress = 0
+                        state.text = "Ошибка загрузки (код ${progress.reason}). Можно повторить."
+                        action.text = "Повторить"
+                        action.isEnabled = true
+                    }
+                    else -> {
+                        bar.isIndeterminate = false
+                        action.text = "Скачать обновление"
+                        action.isEnabled = true
+                    }
+                }
+                handler.postDelayed(this, 850L)
+            }
+        }
+        action.setOnClickListener {
+            val current = try { TowerApkInstaller.status(this, release) }
+                catch (_: Exception) { null }
+            if (current?.state == android.app.DownloadManager.STATUS_SUCCESSFUL) {
+                action.isEnabled = false
+                state.text = "Проверяем SHA-256, пакет и сертификат…"
+                installVerifiedRelease(release)
+            } else {
+                try {
+                    TowerApkInstaller.download(this, release)
+                    action.isEnabled = false
+                    state.text = "Загрузка начата"
+                } catch (e: Exception) {
+                    state.text = e.localizedMessage ?: "Ошибка запуска загрузки"
+                }
+            }
+        }
+        handler.post(watcher)
+    }
+
+    private fun installVerifiedRelease(release: TowerRelease) {
+        apiExecutor.execute {
+            val file = try { TowerApkInstaller.verifiedFile(applicationContext, release) }
+            catch (e: Exception) {
+                runOnUiThread {
+                    if (!isDestroyed) Toast.makeText(this, "Проверка APK: " +
+                        (e.localizedMessage ?: "ошибка"), Toast.LENGTH_LONG).show()
+                }
+                return@execute
+            }
+            runOnUiThread {
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                if (!TowerApkInstaller.canInstall(this)) {
+                    pendingOtaInstall = release
+                    KhakiDialogBuilder(this, palette).setTitle("Разрешение Android")
+                        .setMessage("Разрешите TowerRadar устанавливать скачанные APK. " +
+                            "После возврата проверка файла повторится, " +
+                            "а установку потребуется подтвердить в Android.")
+                        .setPositiveButton("Открыть настройки") { _, _ ->
+                            try { startActivity(TowerApkInstaller.permissionIntent(this)) }
+                            catch (_: Exception) {
+                                pendingOtaInstall = null
+                                Toast.makeText(this, "Настройки установки недоступны",
+                                    Toast.LENGTH_LONG).show()
+                            }
+                        }.setNegativeButton("Позже", null).show()
+                } else try {
+                    startActivity(TowerApkInstaller.installationIntent(this, file))
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Не удалось открыть установщик Android",
+                        Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -1240,8 +1373,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun currentVersionName(): String = try {
         @Suppress("DEPRECATION")
-        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.25.0")
-    } catch (_: Exception) { "0.25.0" }
+        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.26.0")
+    } catch (_: Exception) { "0.26.0" }
 
     private fun openExternal(url: String) {
         try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
@@ -2487,6 +2620,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         askLocation()
         verifySavedConnections(skipActive = true)
+        checkReleaseOnLaunch()
     }
 
     /** Viewing position and search/GPS origin are intentionally independent. */
@@ -4822,6 +4956,10 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onStart() { super.onStart(); mapView.onStart() }
     override fun onResume() {
         super.onResume()
+        pendingOtaInstall?.takeIf { TowerApkInstaller.canInstall(this) }?.let {
+            pendingOtaInstall = null
+            installVerifiedRelease(it)
+        }
         aimForeground = true
         mapView.onResume()
         yandexWebMap?.onResume()
