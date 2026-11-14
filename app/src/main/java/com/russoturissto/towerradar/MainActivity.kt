@@ -3665,8 +3665,8 @@ class MainActivity : Activity(), SensorEventListener {
         mapCoordinatesLabel.layoutParams =
             (mapCoordinatesLabel.layoutParams as FrameLayout.LayoutParams).apply {
                 gravity = Gravity.TOP or Gravity.START
-                width = ViewGroup.LayoutParams.MATCH_PARENT
-                height = dp(27)
+                this.width = ViewGroup.LayoutParams.MATCH_PARENT
+                this.height = dp(27)
                 leftMargin = systemLeftInset + dp(12)
                 rightMargin = systemRightInset + dp(10)
                 topMargin = topInset + height + dp(1)
