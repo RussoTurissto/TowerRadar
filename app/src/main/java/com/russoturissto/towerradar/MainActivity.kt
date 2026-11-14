@@ -1065,10 +1065,20 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun copyCoordinates(value: String) {
+        try {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Координаты", value))
+            Toast.makeText(this, "Координаты скопированы", Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+            Toast.makeText(this, "Не удалось скопировать координаты", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun currentVersionName(): String = try {
         @Suppress("DEPRECATION")
-        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.24.0")
-    } catch (_: Exception) { "0.24.0" }
+        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.25.0")
+    } catch (_: Exception) { "0.25.0" }
 
     private fun openExternal(url: String) {
         try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
@@ -2410,6 +2420,7 @@ class MainActivity : Activity(), SensorEventListener {
         gpsLabel = topStatusPanel.gpsLabel
         topStatusPanel.onHeadingTap { showPositionOptions() }
         topStatusPanel.onSignalTap { showSignalDetails() }
+        topStatusPanel.onCoordinatesTap(::copyCoordinates)
 
         // System map-only fullscreen button and settings float BELOW the header.
         val header = row()
@@ -3640,6 +3651,7 @@ class MainActivity : Activity(), SensorEventListener {
                     fix.accuracy.takeIf { fix.hasAccuracy() })
             )
         location = fix
+        topStatusPanel.updateCoordinates(fix.latitude, fix.longitude)
         if (needsReselection) onActivePositionChanged()
         gpsLabel.text = if (fix.hasAccuracy())
             "GPS ±" + fix.accuracy.toInt() + " м"
@@ -4441,12 +4453,45 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
-    /** Long-press on a map shows altitude of any specific point. */
+    /** Same exact coordinates are available while waiting and after the DEM response. */
+    private fun pointAltitudeDialog(point: LatLng, message: String): android.app.Dialog {
+        val coordinates = CoordinateFormatter.format(point.latitude, point.longitude)
+            ?: return KhakiDialogBuilder(this, palette).setTitle("Высота точки")
+                .setMessage(message).setPositiveButton("Закрыть", null).show()
+        val divider = "\nИсточник: "
+        val sourceAt = message.indexOf(divider)
+        val summary = if (sourceAt >= 0) message.substring(0, sourceAt) else message
+        val source = if (sourceAt >= 0) message.substring(sourceAt + 1) else null
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), dp(5), dp(4), dp(2))
+        }
+        content.addView(text(summary, 14f, palette.secondary),
+            LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        val coordinateRow = row().apply {
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            background = rounded(palette.elevated, 12)
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Координаты точки $coordinates. Скопировать"
+            setOnClickListener { copyCoordinates(coordinates) }
+        }
+        coordinateRow.addView(text("⌖  $coordinates", 13f, palette.text),
+            LinearLayout.LayoutParams(0, -2, 1f))
+        coordinateRow.addView(text("⧉", 18f, palette.olive),
+            LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+        content.addView(coordinateRow, LinearLayout.LayoutParams(-1, -2))
+        source?.let {
+            content.addView(text(it, 12f, palette.secondary),
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        }
+        return KhakiDialogBuilder(this, palette).setTitle("Высота точки")
+            .setView(content).setPositiveButton("Закрыть", null).show()
+    }
+
+    /** Long-press on either map shows altitude for the exact selected point. */
     private fun showElevationAtPoint(point: LatLng) {
-        val loading = KhakiDialogBuilder(this, palette).setTitle("Высота точки")
-            .setMessage("Запрашиваем высоту рельефа над уровнем моря для координат " +
-                String.format(Locale.US, "%.5f, %.5f", point.latitude, point.longitude))
-            .setPositiveButton("Закрыть", null).show()
+        val loading = pointAltitudeDialog(point, "Запрашиваем высоту рельефа над уровнем моря…")
         val key = getPreferences(Context.MODE_PRIVATE)
             .getString("map_key_maptiler", "").orEmpty()
         apiExecutor.execute {
@@ -4461,10 +4506,9 @@ class MainActivity : Activity(), SensorEventListener {
                 e.message ?: "Сервис высот недоступен"
             }
             runOnUiThread {
-                if (loading.isShowing && !isDestroyed) {
+                if (loading.isShowing && !isDestroyed && !isFinishing) {
                     loading.dismiss()
-                    KhakiDialogBuilder(this, palette).setTitle("Высота точки")
-                        .setMessage(outcome).setPositiveButton("Закрыть", null).show()
+                    pointAltitudeDialog(point, outcome)
                 }
             }
         }

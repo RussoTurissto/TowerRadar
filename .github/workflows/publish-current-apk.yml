@@ -1,4 +1,4 @@
-name: Publish verified TowerRadar v0.24.0 APK
+name: Publish verified TowerRadar v0.25.0 APK
 on:
   workflow_run:
     workflows: ["Build Android APK"]
@@ -60,7 +60,7 @@ jobs:
           expected="$(awk '{print $1}' checks/sha256.txt)"
           actual="$(sha256sum extracted/towerradar-signed.apk | awk '{print $1}')"
           test "$expected" = "$actual"
-          cp extracted/towerradar-signed.apk TowerRadar-v0.24.0.apk
+          cp extracted/towerradar-signed.apk TowerRadar-v0.25.0.apk
           echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish direct GitHub Release APK download
@@ -70,15 +70,15 @@ jobs:
           TARGET_SHA: ${{ steps.selection.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view v0.24.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit v0.24.0 --prerelease --repo "$GITHUB_REPOSITORY"
-            gh release upload v0.24.0 TowerRadar-v0.24.0.apk --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.25.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit v0.25.0 --prerelease --repo "$GITHUB_REPOSITORY"
+            gh release upload v0.25.0 TowerRadar-v0.25.0.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.24.0 TowerRadar-v0.24.0.apk \
+            gh release create v0.25.0 TowerRadar-v0.25.0.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
-              --title "TowerRadar v0.24.0 — карточки вышек, ручные записи и обновления" \
-              --notes "TowerRadar 0.24.0: настройки разделены на тематические группы, добавлена локальная форма создания вышки с координатами, оборудованием и фотографией без публикации данных; пользовательские вышки имеют отдельную подсветку и сохраняются независимо от основной базы. Карточка вышки получила интерактивный профиль высот, ручной схематический радиус покрытия, доступ к фото и удаление собственных записей. Оператор предполагается только при явном теге network в OSM, иначе показывается отсутствие достоверных сведений. При неизвестной высоте линии профиля используется явно подписанный сценарий 20-50 м, а не реальная высота. Добавлены компасная памятка по калибровке, ручная проверка обновлений GitHub по стабильному/тестовому каналу, OTA-загрузка APK через системный загрузчик. Ночной стиль для Яндекс Tiles в темной теме. Прежние исправления профиля от ручной точки и плавающих индикаторов сохранены. Android unit-тесты, lint, постоянная подпись и отдельное ручное повышение проверенного prerelease в стабильный релиз." \
+              --title "TowerRadar v0.25.0 — карточки вышек, ручные записи и обновления" \
+              --notes "TowerRadar 0.25.0: настройки разделены на тематические группы, добавлена локальная форма создания вышки с координатами, оборудованием и фотографией без публикации данных; пользовательские вышки имеют отдельную подсветку и сохраняются независимо от основной базы. Добавлены копируемые GPS-координаты в верхней панели и координаты выбранной точки в окне высоты. Карточка вышки получила интерактивный профиль высот, ручной схематический радиус покрытия, доступ к фото и удаление собственных записей. Оператор предполагается только при явном теге network в OSM, иначе показывается отсутствие достоверных сведений. При неизвестной высоте линии профиля используется явно подписанный сценарий 20-50 м, а не реальная высота. Добавлены компасная памятка по калибровке, ручная проверка обновлений GitHub по стабильному/тестовому каналу, OTA-загрузка APK через системный загрузчик. Ночной стиль для Яндекс Tiles в темной теме. Прежние исправления профиля от ручной точки и плавающих индикаторов сохранены. Android unit-тесты, lint, постоянная подпись и отдельное ручное повышение проверенного prerelease в стабильный релиз." \
               --prerelease
           fi
-          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.24.0/TowerRadar-v0.24.0.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.25.0/TowerRadar-v0.25.0.apk" >> "$GITHUB_STEP_SUMMARY"

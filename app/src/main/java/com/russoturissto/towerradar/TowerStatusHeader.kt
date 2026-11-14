@@ -40,6 +40,17 @@ class TowerStatusHeader(ctx: Context) : FrameLayout(ctx) {
         text = "GPS: ожидание"
         gravity = Gravity.END or Gravity.CENTER_VERTICAL
     }
+private val coordinatesLabel = label(11.5f, secondary).apply {
+        text = "⌖ GPS: ожидание"
+        contentDescription = "GPS координаты пока неизвестны"
+    }
+    private val copyCoordinatesLabel = label(17f, accent, true).apply {
+        text = "⧉"
+        gravity = Gravity.END or Gravity.CENTER_VERTICAL
+        contentDescription = "Скопировать координаты"
+    }
+    private var coordinateValue: String? = null
+    private var canShowCoordinateCopy = false
     private val networkLabel = label(11.5f, primary)
     private val towersLabel = label(11.5f, primary, true).apply {
         gravity = Gravity.END or Gravity.CENTER_VERTICAL
@@ -66,8 +77,25 @@ class TowerStatusHeader(ctx: Context) : FrameLayout(ctx) {
         addView(networkLabel, LayoutParams(-2, -2))
         addView(towersLabel, LayoutParams(-2, -2))
         addView(gpsLabel, LayoutParams(-2, -2))
+        addView(coordinatesLabel, LayoutParams(-2, -2))
+        addView(copyCoordinatesLabel, LayoutParams(-2, -2))
         updateNetwork(null, null, null, null, null, null)
         updateTowers(0, 0)
+    }
+
+    fun onCoordinatesTap(action: (String) -> Unit) {
+        coordinatesLabel.setOnClickListener { coordinateValue?.let(action) }
+        copyCoordinatesLabel.setOnClickListener { coordinateValue?.let(action) }
+    }
+
+    fun updateCoordinates(latitude: Double, longitude: Double) {
+        coordinateValue = CoordinateFormatter.format(latitude, longitude)
+        coordinatesLabel.text = coordinateValue?.let { "⌖ $it" } ?: "⌖ GPS: ожидание"
+        coordinatesLabel.contentDescription = coordinateValue?.let {
+            "GPS координаты $it. Нажмите, чтобы скопировать"
+        } ?: "GPS координаты пока неизвестны"
+        copyCoordinatesLabel.visibility = if (coordinateValue != null && canShowCoordinateCopy)
+            View.VISIBLE else View.GONE
     }
 
     fun onHeadingTap(action: () -> Unit) {
@@ -159,9 +187,11 @@ class TowerStatusHeader(ctx: Context) : FrameLayout(ctx) {
         val row2Height = maxOf(dp(19), textHeight(networkLabel), textHeight(gpsLabel))
         val y1 = dp(6)
         val y2 = y1 + row1Height + dp(1)
-        val naturalHeight = y2 + row2Height + dp(5)
-        val totalHeight = maxOf(naturalHeight,
-            if (immersive) minOf(cutoutBottom + dp(4), dp(84)) else 0)
+        // The copyable coordinates row occupies the full width, below camera cutouts.
+        val row3Height = maxOf(dp(23), textHeight(coordinatesLabel))
+        val y3 = maxOf(y2 + row2Height + dp(4),
+            if (immersive) cutoutBottom + dp(5) else 0)
+        val totalHeight = y3 + row3Height + dp(6)
 
         fun place(v: TextView, segment: DisplayModePolicy.Segment?,
                   top: Int, height: Int, alignRight: Boolean) {
@@ -182,6 +212,31 @@ class TowerStatusHeader(ctx: Context) : FrameLayout(ctx) {
         place(networkLabel, left, y2, row2Height, false)
         place(towersLabel, right, y1, row1Height, true)
         place(gpsLabel, right, y2, row2Height, true)
+        val coordinatesStart = (safeLeft + edge).coerceAtMost(width)
+        val coordinatesEnd = (width - safeRight - edge).coerceAtLeast(coordinatesStart)
+        val coordinatesWidth = coordinatesEnd - coordinatesStart
+        canShowCoordinateCopy = coordinatesWidth >= dp(160)
+        if (coordinatesWidth < dp(85)) {
+            coordinatesLabel.visibility = View.GONE
+            copyCoordinatesLabel.visibility = View.GONE
+        } else {
+            val copyWidth = if (canShowCoordinateCopy) dp(29) else 0
+            coordinatesLabel.visibility = View.VISIBLE
+            coordinatesLabel.layoutParams = LayoutParams(coordinatesWidth - copyWidth, row3Height,
+                Gravity.TOP or Gravity.START).apply {
+                leftMargin = coordinatesStart
+                topMargin = y3
+            }
+            copyCoordinatesLabel.visibility =
+                if (coordinateValue != null && canShowCoordinateCopy) View.VISIBLE else View.GONE
+            if (canShowCoordinateCopy) {
+                copyCoordinatesLabel.layoutParams = LayoutParams(copyWidth, row3Height,
+                    Gravity.TOP or Gravity.START).apply {
+                    leftMargin = coordinatesEnd - copyWidth
+                    topMargin = y3
+                }
+            }
+        }
         // If the notch occupies most of the top edge, we deliberately omit
         // secondary indicators instead of painting them under the camera.
         return totalHeight
