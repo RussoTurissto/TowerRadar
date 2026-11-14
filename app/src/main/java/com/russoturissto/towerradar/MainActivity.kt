@@ -106,6 +106,8 @@ class MainActivity : Activity(), SensorEventListener {
     private val apiExecutor = Executors.newFixedThreadPool(2)
     private lateinit var topHeader: LinearLayout
     private lateinit var topStatusPanel: TowerStatusHeader
+    private lateinit var mapCoordinatesLabel: TextView
+    private var mapCenterCoordinateValue: String? = null
     private lateinit var statusBarProtection: View
     private var topPanelHeight = 0
     private lateinit var crosshairReticle: CrosshairView
@@ -144,6 +146,7 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var expandedSignalRow: LinearLayout
     private lateinit var compactHandleRow: FrameLayout
     private lateinit var floatingRail: LinearLayout
+    private lateinit var actionPopup: LinearLayout
     private lateinit var actionHeightRow: LinearLayout
     private lateinit var actionTowerRow: LinearLayout
     private lateinit var actionExpandButton: Button
@@ -2943,7 +2946,24 @@ class MainActivity : Activity(), SensorEventListener {
         gpsLabel = topStatusPanel.gpsLabel
         topStatusPanel.onHeadingTap { showPositionOptions() }
         topStatusPanel.onSignalTap { showSignalDetails() }
-        topStatusPanel.onCoordinatesTap(::copyCoordinates)
+        // Copyable coordinates sit on the MAP, not inside the dark diagnostics bar.
+        mapCoordinatesLabel = text("⌖ Центр карты: ожидание", 15f,
+            Color.rgb(255, 220, 110)).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(),
+                Color.rgb(21, 26, 20))
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), 0, dp(8), 0)
+            elevation = dp(5).toFloat()
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Координаты центра карты, нажмите для копирования"
+            setOnClickListener { mapCenterCoordinateValue?.let(::copyCoordinates) }
+        }
+        rootView.addView(mapCoordinatesLabel,
+            FrameLayout.LayoutParams(-1, dp(27), Gravity.TOP or Gravity.START))
 
         // System map-only fullscreen button and settings float BELOW the header.
         val header = row()
@@ -2995,6 +3015,17 @@ class MainActivity : Activity(), SensorEventListener {
             Gravity.END or Gravity.BOTTOM).apply {
             setMargins(0, 0, dp(12), dp(112))
         })
+        // Menu overlay is independent: expanding text never affects fixed button positions.
+        actionPopup = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.END
+            visibility = View.GONE
+            elevation = dp(9).toFloat()
+        }
+        rootView.addView(actionPopup, FrameLayout.LayoutParams(-2, -2,
+            Gravity.END or Gravity.BOTTOM).apply {
+            setMargins(0, 0, dp(12), dp(226))
+        })
         fun railButton(button: Button, hint: String) {
             button.contentDescription = hint
             floatingRail.addView(button, LinearLayout.LayoutParams(dp(49), dp(49)).apply {
@@ -3031,7 +3062,7 @@ class MainActivity : Activity(), SensorEventListener {
             line.addView(iconPlate, LinearLayout.LayoutParams(dp(49), dp(49)).apply {
                 marginStart = dp(9)
             })
-            floatingRail.addView(line, LinearLayout.LayoutParams(-2, dp(49)).apply {
+            actionPopup.addView(line, LinearLayout.LayoutParams(-2, dp(49)).apply {
                 bottomMargin = dp(8)
                 gravity = Gravity.END
             })
@@ -3631,6 +3662,15 @@ class MainActivity : Activity(), SensorEventListener {
                 topMargin = 0
             }
         statusBarProtection.visibility = if (immersive) View.GONE else View.VISIBLE
+        mapCoordinatesLabel.layoutParams =
+            (mapCoordinatesLabel.layoutParams as FrameLayout.LayoutParams).apply {
+                gravity = Gravity.TOP or Gravity.START
+                width = ViewGroup.LayoutParams.MATCH_PARENT
+                height = dp(27)
+                leftMargin = systemLeftInset + dp(12)
+                rightMargin = systemRightInset + dp(10)
+                topMargin = topInset + height + dp(1)
+            }
         topStatusPanel.visibility = if (immersive && Build.VERSION.SDK_INT >= 30 &&
             insets.isVisible(WindowInsets.Type.statusBars()))
             View.INVISIBLE else View.VISIBLE
@@ -3706,11 +3746,15 @@ class MainActivity : Activity(), SensorEventListener {
         }
         floatingRail.visibility = if (mapFullscreen || isChoosingCrosshair ||
             offlineSelectionEnabled || (sheetExpanded && !isWide)) View.GONE else View.VISIBLE
-        if ((mapFullscreen || isChoosingCrosshair || sheetExpanded) && actionMenuExpanded) {
+        if ((mapFullscreen || isChoosingCrosshair || offlineSelectionEnabled ||
+                sheetExpanded) && actionMenuExpanded) {
             actionMenuExpanded = false
             actionHeightRow.visibility = View.GONE
             actionTowerRow.visibility = View.GONE
+            actionPopup.visibility = View.GONE
             actionExpandButton.text = "+"
+            northIndicator.animate().cancel()
+            northIndicator.translationY = 0f
         }
         // A consistent baseline keeps all three buttons directly above the
         // collapsed sheet. The compass sits immediately above the whole rail.
@@ -3720,8 +3764,15 @@ class MainActivity : Activity(), SensorEventListener {
             else targetHeight + dp(8)
         floatingRail.layoutParams = (floatingRail.layoutParams as FrameLayout.LayoutParams).apply {
             gravity = Gravity.END or Gravity.BOTTOM
+            width = dp(49)
             rightMargin = systemRightInset + sideWidth + dp(12)
             bottomMargin = railBottom
+        }
+        actionPopup.layoutParams = (actionPopup.layoutParams as FrameLayout.LayoutParams).apply {
+            gravity = Gravity.END or Gravity.BOTTOM
+            width = ViewGroup.LayoutParams.WRAP_CONTENT
+            rightMargin = systemRightInset + sideWidth + dp(12)
+            bottomMargin = railBottom + dp(2 * (49 + 8))
         }
         northIndicator.visibility = if (sheetExpanded && !isWide &&
             !mapFullscreen) View.GONE else View.VISIBLE
@@ -3734,7 +3785,7 @@ class MainActivity : Activity(), SensorEventListener {
                 // lower-right SAFE screen corner, above gesture navigation.
                 bottomMargin = if (mapFullscreen)
                     systemBottomInset + dp(7)
-                else railBottom + dp((if (actionMenuExpanded) 4 else 2) * (49 + 8) + 5)
+                else railBottom + dp(2 * (49 + 8) + 5)
             }
         crosshairControls.layoutParams =
             (crosshairControls.layoutParams as FrameLayout.LayoutParams).apply {
@@ -3804,7 +3855,8 @@ class MainActivity : Activity(), SensorEventListener {
         if (animate) {
             // MapLibre camera and raster cache are never torn down during rotation.
             // Animate ONLY the overlays; do not fade or reposition the map itself.
-            for (view in listOf(sheetView, topHeader, floatingRail, northIndicator)) {
+            for (view in listOf(sheetView, topHeader, floatingRail, actionPopup,
+                    northIndicator)) {
                 view.animate().cancel()
                 view.alpha = 0.65f
                 view.animate().alpha(1f).setDuration(180L).start()
@@ -3855,19 +3907,33 @@ class MainActivity : Activity(), SensorEventListener {
     private fun setActionMenuExpanded(expanded: Boolean) {
         if (!::actionHeightRow.isInitialized) return
         actionMenuExpanded = expanded
+        actionPopup.visibility = if (expanded) View.VISIBLE else View.GONE
         actionHeightRow.visibility = if (expanded) View.VISIBLE else View.GONE
         actionTowerRow.visibility = if (expanded) View.VISIBLE else View.GONE
         actionExpandButton.text = if (expanded) "×" else "+"
         actionExpandButton.contentDescription =
             if (expanded) "Закрыть меню действий" else "Открыть меню действий"
         applyResponsiveLayout(false)
+        northIndicator.animate().cancel()
+        if (northIndicator.visibility == View.VISIBLE) {
+            northIndicator.animate().translationY(
+                if (expanded) -dp(2 * (49 + 8)).toFloat() else 0f
+            ).setDuration(220L).start()
+        } else northIndicator.translationY = 0f
     }
 
     private fun updateMapCenterCoordinates() {
         // The reticle and this value refer to the camera target, not the GPS marker.
         map?.cameraPosition?.target?.let {
-            if (::topStatusPanel.isInitialized)
-                topStatusPanel.updateCoordinates(it.latitude, it.longitude)
+            mapCenterCoordinateValue = CoordinateFormatter.format(it.latitude, it.longitude)
+            if (::mapCoordinatesLabel.isInitialized) {
+                val value = mapCenterCoordinateValue
+                mapCoordinatesLabel.text = if (value != null) "⌖ $value  ⧉"
+                    else "⌖ Центр карты: ожидание"
+                mapCoordinatesLabel.contentDescription = if (value != null)
+                    "Координаты центра карты $value. Нажмите, чтобы скопировать"
+                    else "Координаты центра карты пока неизвестны"
+            }
         }
     }
 
@@ -3956,6 +4022,7 @@ class MainActivity : Activity(), SensorEventListener {
         }[1] else null
         val ticket = ++compassBounceGeneration
         if (full) hideDirectionPanel()
+        if (actionMenuExpanded) setActionMenuExpanded(false)
         mapFullscreen = full
         sheetView.visibility = if (full) View.GONE else View.VISIBLE
         floatingRail.visibility =
