@@ -112,7 +112,8 @@ window.TowerRadar={
   if(!map)return;
   objects.forEach(function(o){map.geoObjects.remove(o)});objects=[];
   (data.towers||[]).forEach(function(t){
-   dot(t.lat,t.lon,t.name||'Вышка',t.estimated?'#2ba4b5':'#708050')
+   dot(t.lat,t.lon,t.name||'Вышка',t.manual?'#a8b977':
+      (t.estimated?'#2ba4b5':'#708050'))
   });
   if(data.me){
    dot(data.me.lat,data.me.lon,'Моё положение','#09a0b2');
@@ -121,6 +122,12 @@ window.TowerRadar={
    dot(data.serving.lat,data.serving.lon,'Обслуживающая сота','#d38a38');
    if(data.me)add(new ymaps.Polyline([[data.me.lat,data.me.lon],
      [data.serving.lat,data.serving.lon]],{},{strokeColor:'#d38a38',strokeWidth:3,strokeStyle:'dash'}))
+  }
+  if(data.coverage && data.target && data.coverage > 0) {
+    add(new ymaps.Circle([[data.target.lat,data.target.lon],data.coverage],
+       {hintContent:'Схематический радиус · НЕ прогноз сигнала'},
+       {fillColor:'#8da96333',strokeColor:'#8da963',
+        strokeWidth:2,strokeStyle:'dash'}));
   }
   if(data.me&&data.target)add(new ymaps.Polyline([
     [data.me.lat,data.me.lon],[data.target.lat,data.target.lon]
@@ -155,12 +162,14 @@ if(typeof ymaps==='undefined')TowerRadarBridge.failed();else ymaps.ready(init);
             String.format(Locale.US, "%.8f,%.8f,%.2f", lat, lon, zoom) + ")")
     }
     fun setObjects(towers: List<TowerSite>, me: Pair<Double,Double>?,
-                   serving: TowerSite?, target: TowerSite?) {
+                   serving: TowerSite?, target: TowerSite?,
+                   coverageRadiusMeters: Int = 0) {
         val root = JSONObject()
         val markers = JSONArray()
         towers.take(1600).forEach {
             markers.put(JSONObject().put("lat", it.latitude).put("lon", it.longitude)
                 .put("estimated", !it.source.startsWith("OpenStreetMap"))
+                .put("manual", it.id.startsWith("user/"))
                 .put("name", (it.name ?: it.operator ?: "Объект связи").take(85)))
         }
         root.put("towers", markers)
@@ -168,6 +177,7 @@ if(typeof ymaps==='undefined')TowerRadarBridge.failed();else ymaps.ready(init);
         if (me != null) root.put("me", point(me.first, me.second))
         if (serving != null) root.put("serving", point(serving.latitude, serving.longitude))
         if (target != null) root.put("target", point(target.latitude, target.longitude))
+        if (coverageRadiusMeters > 0) root.put("coverage", coverageRadiusMeters)
         pendingObjects = root.toString()
         if (ready && showing) js("TowerRadar.setObjects(" + pendingObjects + ")")
     }

@@ -1,0 +1,61 @@
+name: Promote tested APK to stable
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Verified version, e.g. 0.24.0 (must exist as pre-release)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Validate existing signed APK release and latest main build
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo 'Invalid version' >&2; exit 1;
+          }
+          tag="v$VERSION"
+          apk="TowerRadar-v$VERSION.apk"
+          repo="$GITHUB_REPOSITORY"
+          gh release view "$tag" --repo "$repo" --json isPrerelease \
+            --jq '.isPrerelease' | grep -qx true
+          target="$(gh api "repos/$repo/git/ref/tags/$tag" --jq '.object.sha')"
+          head="$(gh api "repos/$repo/branches/main" --jq '.commit.sha')"
+          [[ "$target" == "$head" ]] || {
+            echo "Release tag $tag must point to current main HEAD" >&2; exit 1;
+          }
+          mkdir -p checks
+          gh release download "$tag" --repo "$repo" --pattern "$apk" --dir checks
+          test -s "checks/$apk"
+          digest="$(gh api "repos/$repo/releases/tags/$tag" --jq '.assets[] | select(.name=="'"$apk"'") | .digest')"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || {
+            echo 'Missing release asset sha256' >&2; exit 1;
+          }
+          actual="$(sha256sum "checks/$apk" | awk '{print $1}')"
+          [[ "$digest" == "sha256:$actual" ]] || {
+            echo 'Asset SHA-256 mismatch' >&2; exit 1;
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Verified release APK sha256: $actual" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mark manually tested APK as stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --prerelease=false --latest
+          echo "Stable release: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"

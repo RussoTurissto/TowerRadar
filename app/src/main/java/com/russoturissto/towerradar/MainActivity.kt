@@ -197,6 +197,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var headingDegrees = 0f
     private var lastHeadingOverlay = Float.NaN
     private var lastHeadingOverlayAt = 0L
+    private var lastSensorAccuracy = -1
     private var providerIndex = 0
     private var choosingMap = false
     private lateinit var details: LinearLayout
@@ -219,6 +220,14 @@ class MainActivity : Activity(), SensorEventListener {
     private var lastFetchTime = 0L
     private var sites = emptyList<TowerSite>()
     private lateinit var towerDatabase: TowerDatabase
+    private lateinit var userTowerStore: UserTowerStore
+    private var userTowerEditor: UserTowerEditor? = null
+    private lateinit var coverageButton: Button
+    private lateinit var manualTowerActions: LinearLayout
+    private lateinit var photoButton: Button
+    private lateinit var removeTowerButton: Button
+    private var coverageTowerId: String? = null
+    private var coverageRadiusMetres: Int = 0
     private lateinit var progressStrip: LinearLayout
     private lateinit var progressLabel: TextView
     private lateinit var progressBar: ProgressBar
@@ -250,7 +259,9 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
 
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+        if (sensor?.type == headingSensor?.type) lastSensorAccuracy = accuracy
+    }
 
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
@@ -339,7 +350,7 @@ class MainActivity : Activity(), SensorEventListener {
                 })
         }
         current.setStyle(MapSources.style(provider, key, session?.token.orEmpty())) { style ->
-            if (palette.dark && provider.keyPref == null) {
+            if (palette.dark && (provider.keyPref == null || provider.id == "yandex")) {
                 (style.getLayer("basemap-layer") as? RasterLayer)?.setProperties(
                     PropertyFactory.rasterBrightnessMax(0.66f),
                     PropertyFactory.rasterSaturation(-0.48f),
@@ -356,7 +367,19 @@ class MainActivity : Activity(), SensorEventListener {
             style.addSource(GeoJsonSource("cell-link", emptyFeatures()))
             style.addSource(GeoJsonSource("serving-cell", emptyFeatures()))
             style.addSource(GeoJsonSource("selected-aim", emptyFeatures()))
+            style.addSource(GeoJsonSource("coverage-preview", emptyFeatures()))
 
+            // Approximate manually chosen radius, clearly different from RF prediction.
+            style.addLayer(FillLayer("coverage-approx-fill", "coverage-preview").apply {
+                setProperties(PropertyFactory.fillColor(palette.olive),
+                    PropertyFactory.fillOpacity(0.14f))
+            })
+            style.addLayer(LineLayer("coverage-approx-border", "coverage-preview").apply {
+                setProperties(PropertyFactory.lineColor(palette.olive),
+                    PropertyFactory.lineWidth(1.6f),
+                    PropertyFactory.lineOpacity(0.66f),
+                    PropertyFactory.lineDasharray(arrayOf(2.5f, 2f)))
+            })
             style.addLayer(FillLayer("gps-accuracy-fill", "gps-accuracy").apply {
                 setProperties(PropertyFactory.fillColor(palette.olive), PropertyFactory.fillOpacity(0.10f))
             })
@@ -435,13 +458,23 @@ class MainActivity : Activity(), SensorEventListener {
             style.addLayer(CircleLayer("mobile-masts", "towers").apply {
                 setFilter(Expression.all(
                     Expression.eq(Expression.get("mobile"), Expression.literal(true)),
-                    Expression.eq(Expression.get("estimated"), Expression.literal(false))
+                    Expression.eq(Expression.get("estimated"), Expression.literal(false)),
+                    Expression.eq(Expression.get("manual"), Expression.literal(false))
                 ))
                 setProperties(
                     PropertyFactory.circleColor(palette.olive),
                     PropertyFactory.circleRadius(7f),
                     PropertyFactory.circleStrokeColor(Color.WHITE),
                     PropertyFactory.circleStrokeWidth(2f)
+                )
+            })
+            style.addLayer(CircleLayer("manual-tower-positions", "towers").apply {
+                setFilter(Expression.eq(Expression.get("manual"), Expression.literal(true)))
+                setProperties(
+                    PropertyFactory.circleColor(palette.olive),
+                    PropertyFactory.circleRadius(7.5f),
+                    PropertyFactory.circleStrokeColor(Color.rgb(231, 207, 126)),
+                    PropertyFactory.circleStrokeWidth(2.8f)
                 )
             })
             style.addLayer(CircleLayer("estimated-cell-positions", "towers").apply {
@@ -483,6 +516,7 @@ class MainActivity : Activity(), SensorEventListener {
             updateDot()
             showPins()
             updateOverlays()
+            updateCoverageOverlay()
             updateAimColors()
             updateServingPulse()
             if (!initiallyCentered) center?.let(::moveCamera)
@@ -552,7 +586,8 @@ class MainActivity : Activity(), SensorEventListener {
         if (!bridge.showing) return
         val p = activeUserPoint()
         bridge.setObjects(visible, p?.let { it.latitude to it.longitude },
-            servingSite, selectedAimSite)
+            servingSite, selectedAimSite,
+            if (coverageTowerId == selectedAimSite?.id) coverageRadiusMetres else 0)
     }
 
     /** Select a reachable raster tile host using a single low-zoom tile request. */
@@ -795,45 +830,351 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
 
+    /** Five compact sections instead of a long flat technical settings list. */
     private fun showSettings() {
         val items = arrayOf(
-            "Тема оформления: " + when (getPreferences(Context.MODE_PRIVATE)
-                .getString("app_theme", KhakiTheme.SYSTEM)) {
-                    KhakiTheme.DAY -> "Дневная"
-                    KhakiTheme.NIGHT -> "Ночная"
-                    else -> "Системная"
-                },
-            "Экран и отображение: " + if (displayMode == DisplayModePolicy.FULLSCREEN)
-                "Полноэкранный" else "Стандартный",
-            "Геопозиция: " + if (manualPoint == null) "Автоматическая GPS" else "Ручная точка",
-            "SIM для отслеживания",
-            "Подключения API: Яндекс Tiles/JS · MapTiler · OpenCellID",
-            "Индикатор направления: " + if (showCone) "Включён" else "Выключен",
-            "Яркость луча и сектора: раздельная настройка",
-            "Кеш карт: лимит " + mapTileCache.limitMb() + " МБ",
-            "Резервная копия: защищённый экспорт и восстановление",
-            "Хранилище и данные: кеш / база вышек"
+            "Оформление и экран",
+            "Карты и офлайн-данные",
+            "Вышки и рельеф",
+            "Геопозиция и сеть",
+            "Компас и наведение",
+            "Обновления TowerRadar"
         )
         KhakiDialogBuilder(this, palette).setTitle("Настройки · TowerRadar")
-            .setItems(items) { _, selected ->
-                when (selected) {
-                    0 -> selectTheme()
-                    1 -> selectDisplayMode()
-                    2 -> showPositionOptions()
-                    3 -> selectSim()
-                    4 -> showConnections()
-                    5 -> {
+            .setItems(items) { _, index ->
+                when (index) {
+                    0 -> showAppearanceMenu()
+                    1 -> showMapsMenu()
+                    2 -> showTowersMenu()
+                    3 -> showLocationMenu()
+                    4 -> showCompassMenu()
+                    5 -> showUpdateMenu()
+                }
+            }.setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun showAppearanceMenu() {
+        KhakiDialogBuilder(this, palette).setTitle("Оформление и экран")
+            .setItems(arrayOf("Тема · системная / дневная / ночная",
+                "Режим экрана · стандартный / полноэкранный")) { _, n ->
+                when (n) { 0 -> selectTheme(); 1 -> selectDisplayMode() }
+            }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
+    }
+
+    private fun showMapsMenu() {
+        KhakiDialogBuilder(this, palette).setTitle("Карты и офлайн")
+            .setItems(arrayOf("Картографические подложки · в панели Подробнее",
+                "Подключения API · Яндекс / MapTiler / OpenCellID",
+                "Кеш карты · лимиты и очистка",
+                "Офлайн-области · доступность и лицензии")) { _, n ->
+                when (n) {
+                    0 -> {
+                        if (mapFullscreen) setMapFullscreen(false)
+                        expandSheet(true)
+                    }
+                    1 -> showConnections()
+                    2 -> showCacheSettings()
+                    3 -> showOfflineAreaInfo()
+                }
+            }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
+    }
+
+    private fun showTowersMenu() {
+        KhakiDialogBuilder(this, palette).setTitle("Вышки и рельеф")
+            .setItems(arrayOf("Добавить вышку · координаты / оборудование / фото",
+                "Пользовательские вышки · управление",
+                "Высота антенны · расчётный сценарий",
+                "Хранилище · данные и кеш",
+                "Резервная копия · экспорт / восстановление")) { _, n ->
+                when (n) {
+                    0 -> showAddUserTower()
+                    1 -> showUserTowers()
+                    2 -> showHeightScenario()
+                    3 -> showTowerStorageSettings()
+                    4 -> showBackupMenu()
+                }
+            }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
+    }
+
+    private fun showLocationMenu() {
+        KhakiDialogBuilder(this, palette).setTitle("Геопозиция и сеть")
+            .setItems(arrayOf("Выбрать геопозицию · GPS / ручная точка",
+                "Выбрать SIM",
+                "Радиосигнал · диагностика",
+                "Дополнительные соты · источники")) { _, n ->
+                when (n) {
+                    0 -> showPositionOptions()
+                    1 -> selectSim()
+                    2 -> showSignalDetails()
+                    3 -> editCellKey()
+                }
+            }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
+    }
+
+    private fun showCompassMenu() {
+        KhakiDialogBuilder(this, palette).setTitle("Компас и наведение")
+            .setItems(arrayOf(
+                "Калибровка компаса · проверка датчика",
+                "Сектор направления: " + if (showCone) "включён" else "выключен",
+                "Яркость луча и сектора"
+            )) { _, n ->
+                when (n) {
+                    0 -> showCompassCalibration()
+                    1 -> {
                         showCone = !showCone
                         getPreferences(Context.MODE_PRIVATE).edit()
                             .putBoolean("show_cone", showCone).apply()
                         updateOverlays()
+                        showCompassMenu()
                     }
-                    6 -> showDirectionBrightness()
-                    7 -> showCacheSettings()
-                    8 -> showBackupMenu()
-                    9 -> showTowerStorageSettings()
+                    2 -> showDirectionBrightness()
                 }
+            }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
+    }
+
+    private fun showCompassCalibration() {
+        val quality = when (lastSensorAccuracy) {
+            SensorManager.SENSOR_STATUS_ACCURACY_HIGH -> "высокая"
+            SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM -> "средняя"
+            SensorManager.SENSOR_STATUS_ACCURACY_LOW -> "низкая"
+            SensorManager.SENSOR_STATUS_UNRELIABLE -> "ненадёжная"
+            else -> "не сообщается датчиком"
+        }
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Калибровка компаса")
+            .setMessage("Точность датчика: " + quality + ".\n\n" +
+                "Переместитесь подальше от магнитов, металла и электроники. " +
+                "Несколько раз плавно повращайте телефон в воздухе восьмёркой, " +
+                "наклоняя его по разным осям. Сверьте направление с известным ориентиром.\n\n" +
+                "Калибровку выполняет Android и оборудование телефона; TowerRadar " +
+                "не может принудительно перепрограммировать магнитометр.")
+            .setPositiveButton("Готово", null)
+            .setNeutralButton("Проверить ещё раз") { _, _ -> showCompassCalibration() }
+            .show()
+    }
+
+    private fun showHeightScenario() {
+        val heights = intArrayOf(20, 25, 30, 50)
+        val current = getPreferences(Context.MODE_PRIVATE).getInt("height_scenario_m", 30)
+        val labels = heights.map {
+            it.toString() + " м" + if (it == 30) " · типовой сценарий ITU-R" else ""
+        }.toTypedArray()
+        KhakiDialogBuilder(this, palette).setTitle("Расчётная высота антенны")
+            .setMessage("Используется ТОЛЬКО если фактическая высота не указана. " +
+                "Это модельный сценарий, а не измерение вышки. " +
+                "Изменение параметра не исправляет и не дополняет открытую базу.")
+            .setSingleChoiceItems(labels, heights.indexOf(current).coerceAtLeast(0)) { _, n ->
+                getPreferences(Context.MODE_PRIVATE).edit()
+                    .putInt("height_scenario_m", heights[n]).apply()
+            }.setNegativeButton("Назад") { _, _ -> showTowersMenu() }.show()
+    }
+
+    private fun showOfflineAreaInfo() {
+        val total = try { towerDatabase.count() } catch (_: Exception) { 0 }
+        KhakiDialogBuilder(this, palette).setTitle("Офлайн-области")
+            .setMessage("В локальной базе вышек: " + total + " объектов.\n\n" +
+                "Ранее просмотренные участки карты могут открываться из кеша, " +
+                "когда это разрешено поставщиком. Области России и Украины " +
+                "пока нельзя скачивать целиком: публичные серверы OpenStreetMap " +
+                "не разрешают массовое предварительное скачивание, а для " +
+                "других источников нужны соответствующие офлайн-права.\n\n" +
+                "Здесь не выполняется скрытая загрузка областей или вышек. " +
+                "Для полноценных пакетов понадобится разрешённый офлайн-источник.")
+            .setPositiveButton("Понятно", null)
+            .setNeutralButton("Настройки кеша") { _, _ -> showCacheSettings() }
+            .show()
+    }
+
+    private fun showUpdateMenu() {
+        KhakiDialogBuilder(this, palette).setTitle("Обновления TowerRadar")
+            .setMessage("Установлена версия " + currentVersionName() + ".\n\n" +
+                "Стабильная версия проходит ручную публикацию после тестирования. " +
+                "Тестовые APK доступны отдельно и могут содержать ошибки. " +
+                "Проверка выполняется только по нажатию; фоновых уведомлений нет.")
+            .setItems(arrayOf("Проверить стабильную версию",
+                "Проверить тестовую версию",
+                "Сборки GitHub Actions · тесты до релиза")) { _, n ->
+                when (n) {
+                    0 -> checkAvailableRelease(false)
+                    1 -> checkAvailableRelease(true)
+                    2 -> openExternal("https://github.com/RussoTurissto/TowerRadar/actions")
+                }
+            }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
+    }
+
+    private fun checkAvailableRelease(testChannel: Boolean) {
+        val label = if (testChannel) "тестовом" else "стабильном"
+        Toast.makeText(this, "Проверяем релизы GitHub…", Toast.LENGTH_SHORT).show()
+        apiExecutor.execute {
+            val outcome = try { ReleaseFeed.query(testChannel) to null }
+            catch (e: Exception) { null to (e.message ?: "Нет связи с GitHub") }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                val release = outcome.first
+                if (release == null) {
+                    KhakiDialogBuilder(this, palette)
+                        .setTitle("Обновления · " + label + " канале")
+                        .setMessage(outcome.second ?: "Опубликованных APK на этом канале пока нет.")
+                        .setPositiveButton("Понятно", null).show()
+                    return@runOnUiThread
+                }
+                val newer = ReleaseFeed.isNewer(release.version, currentVersionName())
+                val size = String.format(Locale.US, "%.1f МБ",
+                    release.apkBytes / 1048576.0)
+                KhakiDialogBuilder(this, palette)
+                    .setTitle(if (newer) "Доступна версия " + release.version
+                        else "TowerRadar " + release.version)
+                    .setMessage((if (newer) "Можно скачать обновление.\n"
+                        else "Установлена не более старая версия.\n") +
+                        "Канал: " + (if (testChannel) "тестовый" else "стабильный"))
+                    .setPositiveButton(if (newer) "Скачать APK" else "Открыть релиз") { _, _ ->
+                        if (newer) downloadReleaseApk(release)
+                        else openExternal(release.releasePage)
+                    }
+                    .setNegativeButton("Закрыть", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun downloadReleaseApk(release: TowerRelease) {
+        try {
+            val manager = getSystemService(Context.DOWNLOAD_SERVICE)
+                as android.app.DownloadManager
+            val request = android.app.DownloadManager.Request(Uri.parse(release.apkUrl))
+                .setTitle("TowerRadar " + release.version)
+                .setDescription("Подписанный APK из GitHub Releases")
+                .setMimeType("application/vnd.android.package-archive")
+                .setNotificationVisibility(
+                    android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setAllowedOverMetered(true)
+            manager.enqueue(request)
+            KhakiDialogBuilder(this, palette).setTitle("Загрузка начата")
+                .setMessage("После завершения откройте APK из уведомления " +
+                    "загрузчика Android и подтвердите установку. " +
+                    "Android может попросить разрешить установку из этого источника. " +
+                    "Обновление не устанавливается скрытно.")
+                .setPositiveButton("Понятно", null).show()
+        } catch (_: Exception) {
+            KhakiDialogBuilder(this, palette).setTitle("Ошибка загрузки")
+                .setMessage("Не удалось передать APK системному загрузчику. " +
+                    "Можно открыть страницу релиза через браузер.")
+                .setPositiveButton("Открыть GitHub") { _, _ ->
+                    openExternal(release.releasePage)
+                }.setNegativeButton("Закрыть", null).show()
+        }
+    }
+
+    private fun currentVersionName(): String = try {
+        @Suppress("DEPRECATION")
+        (packageManager.getPackageInfo(packageName, 0).versionName ?: "0.24.0")
+    } catch (_: Exception) { "0.24.0" }
+
+    private fun openExternal(url: String) {
+        try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+        catch (_: Exception) {
+            Toast.makeText(this, "Не удалось открыть браузер", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+
+    private fun showAddUserTower() {
+        if (userTowerEditor?.showing == true) return
+        val point = map?.cameraPosition?.target ?: activeUserPoint() ?: LatLng(55.75, 37.62)
+        userTowerEditor = UserTowerEditor(this, palette, userTowerStore, apiExecutor,
+            point.latitude, point.longitude, onSaved = { site ->
+                if (!isFinishing && !isDestroyed) {
+                    selectedOperator = null
+                    technologyFilter = null
+                    sourceFilter = null
+                    updateOperatorChoices()
+                    showPins()
+                    if (sheetExpanded) expandSheet(false)
+                    map?.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                        LatLng(site.latitude, site.longitude), 15.5), 420)
+                    Toast.makeText(this, "Вышка сохранена только на устройстве",
+                        Toast.LENGTH_LONG).show()
+                }
+            }, onClosed = { userTowerEditor = null })
+        userTowerEditor?.show()
+    }
+
+    private fun showUserTowers() {
+        val records = userTowerStore.all()
+        if (records.isEmpty()) {
+            KhakiDialogBuilder(this, palette).setTitle("Мои вышки")
+                .setMessage("Пока нет добавленных вручную объектов. " +
+                    "Нажмите «Добавить вышку» в панели Подробнее или настройках.")
+                .setPositiveButton("Добавить") { _, _ -> showAddUserTower() }
+                .setNegativeButton("Закрыть", null).show()
+            return
+        }
+        KhakiDialogBuilder(this, palette).setTitle("Мои вышки · " + records.size)
+            .setItems(records.map { it.name ?: "Вышка" }.toTypedArray()) { _, index ->
+                showUserTowerActions(records[index])
             }.setNegativeButton("Закрыть", null).show()
+    }
+
+    private fun showUserTowerActions(site: TowerSite) {
+        val photo = userTowerStore.photoFor(site.id)
+        val choices = listOf("Показать на карте") +
+            if (photo != null) listOf("Открыть фотографию", "Удалить запись")
+            else listOf("Удалить запись")
+        KhakiDialogBuilder(this, palette).setTitle(site.name ?: "Моя вышка")
+            .setMessage("Локальная запись · " +
+                String.format(Locale.US, "%.6f, %.6f", site.latitude, site.longitude))
+            .setItems(choices.toTypedArray()) { _, index ->
+                when (choices[index]) {
+                    "Показать на карте" -> {
+                        selectedOperator = null
+                        technologyFilter = null
+                        sourceFilter = null
+                        updateOperatorChoices()
+                        showPins()
+                        if (sheetExpanded) expandSheet(false)
+                        map?.animateCamera(CameraUpdateFactory.newLatLngZoom(
+                            LatLng(site.latitude, site.longitude), 15.5), 450)
+                        rootView.postDelayed({
+                            if (!isDestroyed) selectTower(LatLng(site.latitude, site.longitude))
+                        }, 530L)
+                    }
+                    "Открыть фотографию" -> showUserPhoto(site)
+                    "Удалить запись" -> confirmRemoveUserTower(site)
+                }
+            }.setNegativeButton("Назад") { _, _ -> showUserTowers() }.show()
+    }
+
+    private fun showUserPhoto(site: TowerSite) {
+        val photo = userTowerStore.photoFor(site.id) ?: return
+        val image = android.widget.ImageView(this).apply {
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+            adjustViewBounds = true
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            val bitmap = android.graphics.BitmapFactory.decodeFile(photo.absolutePath)
+            setImageBitmap(bitmap)
+            contentDescription = "Фотография вышки " + (site.name ?: "")
+        }
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Фотография · " + (site.name ?: "вышка"))
+            .setView(image)
+            .setPositiveButton("Закрыть", null).show()
+    }
+
+    private fun confirmRemoveUserTower(site: TowerSite) {
+        KhakiDialogBuilder(this, palette).setTitle("Удалить вышку?")
+            .setMessage("Будет удалена только ваша локальная запись и её фотография. " +
+                "Данные из OpenStreetMap не затрагиваются.")
+            .setPositiveButton("Удалить") { _, _ ->
+                if (userTowerStore.delete(site.id)) {
+                    if (selectedAimSite?.id == site.id) {
+                        details.visibility = View.GONE
+                        clearAimSelection()
+                    }
+                    updateOperatorChoices()
+                    showPins()
+                    Toast.makeText(this, "Локальная вышка удалена", Toast.LENGTH_SHORT).show()
+                }
+            }.setNegativeButton("Отмена", null).show()
     }
 
     private fun showTowerStorageSettings() {
@@ -968,6 +1309,10 @@ class MainActivity : Activity(), SensorEventListener {
     @Deprecated("Deprecated by Android")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 6201) {
+            if (resultCode == Activity.RESULT_OK) userTowerEditor?.onImagePicked(data?.data)
+            return
+        }
         if (requestCode == 6101) {
             val bytes = pendingEncryptedBackup
             pendingEncryptedBackup = null
@@ -1833,6 +2178,7 @@ class MainActivity : Activity(), SensorEventListener {
         mapTileCache = MapTileCache(this)
         mapTileCache.initialize()
         towerDatabase = TowerDatabase(this)
+        userTowerStore = UserTowerStore(this)
         HttpRequestUtil.setOkHttpClient(OkHttpClient.Builder().addInterceptor { chain ->
             val request = chain.request()
             val url = request.url.toString()
@@ -2377,6 +2723,11 @@ class MainActivity : Activity(), SensorEventListener {
             topMargin = dp(7)
         })
         neighborsButton.setOnClickListener { showNeighborCells() }
+        val addTowerControl = styledButton("＋  Добавить вышку вручную", 12f)
+        controls.addView(addTowerControl, LinearLayout.LayoutParams(-1, dp(43)).apply {
+            topMargin = dp(7)
+        })
+        addTowerControl.setOnClickListener { showAddUserTower() }
         // Removed duplicate Settings and obsolete antenna-registry menu items.
 
         // Detail panel sits above the bottom sheet only when a pin is selected.
@@ -2404,13 +2755,37 @@ class MainActivity : Activity(), SensorEventListener {
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         details.addView(detailBody)
-        profileButton = styledButton("⌁  Профиль высот", 13f).apply {
-            visibility = View.GONE
-            setOnClickListener { selectedAimSite?.let(::showElevationProfile) }
-        }
-        details.addView(profileButton, LinearLayout.LayoutParams(-1, dp(43)).apply {
+        val analysisActions = row()
+        details.addView(analysisActions, LinearLayout.LayoutParams(-1, dp(44)).apply {
             topMargin = dp(8)
         })
+        profileButton = styledButton("⌁  Профиль высот", 11.5f).apply {
+            visibility = View.VISIBLE
+            setOnClickListener { selectedAimSite?.let(::showElevationProfile) }
+        }
+        analysisActions.addView(profileButton, LinearLayout.LayoutParams(0, dp(43), 1f).apply {
+            marginEnd = dp(6)
+        })
+        coverageButton = styledButton("◌  Зона покрытия", 11.5f).apply {
+            setOnClickListener { selectedAimSite?.let(::chooseCoverage) }
+        }
+        analysisActions.addView(coverageButton, LinearLayout.LayoutParams(0, dp(43), 1f))
+        val manualActions = row()
+        details.addView(manualActions, LinearLayout.LayoutParams(-1, dp(42)).apply {
+            topMargin = dp(5)
+        })
+        photoButton = styledButton("▧  Фото", 11.5f).apply {
+            setOnClickListener { selectedAimSite?.let(::showUserPhoto) }
+        }
+        manualActions.addView(photoButton, LinearLayout.LayoutParams(0, dp(41), 1f).apply {
+            marginEnd = dp(6)
+        })
+        removeTowerButton = styledButton("Удалить мою запись", 11.5f).apply {
+            setOnClickListener { selectedAimSite?.let(::confirmRemoveUserTower) }
+        }
+        manualActions.addView(removeTowerButton, LinearLayout.LayoutParams(0, dp(41), 1f))
+        manualActions.visibility = View.GONE
+        manualTowerActions = manualActions
 
         // The actual copyright must remain visible, but should not look
         // like another large map control. A subtle outline keeps it legible.
@@ -3176,7 +3551,8 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun updateOperatorChoices() {
         val names = listOf("Все операторы") +
-            sites.map { it.operator ?: unknown }.distinct().sortedWith(String.CASE_INSENSITIVE_ORDER)
+            (sites + userTowerStore.all()).map { it.operator ?: unknown }
+                .distinct().sortedWith(String.CASE_INSENSITIVE_ORDER)
         val old = selectedOperator ?: "Все операторы"
         operators.onItemSelectedListener = null
         operators.adapter = choice(names)
@@ -3623,7 +3999,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun emptyFeatures(): FeatureCollection = FeatureCollection.fromFeatures(emptyArray<Feature>())
 
     private fun showPins() {
-        visible = sites.filter {
+        visible = (sites + userTowerStore.all()).distinctBy { it.id }.filter {
             (selectedOperator == null || (selectedOperator == unknown && it.operator == null) ||
                 it.operator == selectedOperator) &&
             (technologyFilter == null || when (technologyFilter) {
@@ -3643,7 +4019,9 @@ class MainActivity : Activity(), SensorEventListener {
         val features = visible.map { site ->
             Feature.fromGeometry(Point.fromLngLat(site.longitude, site.latitude)).apply {
                 addBooleanProperty("mobile", site.mobile)
-                addBooleanProperty("estimated", !site.source.startsWith("OpenStreetMap"))
+                addBooleanProperty("estimated", !site.source.startsWith("OpenStreetMap") &&
+                    !site.id.startsWith("user/"))
+                addBooleanProperty("manual", site.id.startsWith("user/"))
             }
         }
         (map?.style?.getSource("towers") as? GeoJsonSource)
@@ -3728,6 +4106,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun updateOverlays() {
         if (!styled) return
+        updateCoverageOverlay()
         val point = manualPoint ?: location?.let { LatLng(it.latitude, it.longitude) }
         val accurate = if (manualPoint == null) location?.takeIf {
             it.hasAccuracy() && it.accuracy in 1f..1500f &&
@@ -3840,6 +4219,9 @@ class MainActivity : Activity(), SensorEventListener {
         selectedOriginAccuracy = null
         if (selectedAimSite == null) return
         selectedAimSite = null
+        coverageTowerId = null
+        coverageRadiusMetres = 0
+        updateCoverageOverlay()
         syncYandexObjects()
         aimAligned = false
         aimAlignmentInitialized = false
@@ -3913,6 +4295,47 @@ class MainActivity : Activity(), SensorEventListener {
 
 
     /** Elevation graph remains fully native, inheriting both Khaki Modern themes. */
+
+    /** Translucent rings are user-selected scenarios, not real base-station coverage. */
+    private fun chooseCoverage(site: TowerSite) {
+        val radii = CoverageEstimate.radiusChoicesMetres
+        val options = arrayOf("Не показывать") + radii.map {
+            if (it < 1000) it.toString() + " м" else
+                String.format(Locale.US, "%.1f км", it / 1000.0)
+        }
+        val chosen = if (coverageTowerId == site.id) coverageRadiusMetres else 0
+        KhakiDialogBuilder(this, palette).setTitle("Предполагаемая зона покрытия")
+            .setMessage("Выберите условный радиус от вышки. Цветной круг НЕ является " +
+                "расчётом радиосигнала: неизвестны мощность, частота, " +
+                "направление антенн, рельеф и помехи.")
+            .setSingleChoiceItems(options,
+                if (chosen == 0) 0 else radii.indexOf(chosen) + 1) { _, index ->
+                coverageTowerId = if (index == 0) null else site.id
+                coverageRadiusMetres = if (index == 0) 0 else radii[index - 1]
+                updateCoverageOverlay()
+                syncYandexObjects()
+                Toast.makeText(this,
+                    if (index == 0) "Схематическая зона скрыта"
+                    else "Показан условный радиус · не прогноз сигнала",
+                    Toast.LENGTH_SHORT).show()
+            }.setNegativeButton("Отмена", null).show()
+    }
+
+    private fun updateCoverageOverlay() {
+        val source = map?.style?.getSource("coverage-preview") as? GeoJsonSource ?: return
+        val site = selectedAimSite?.takeIf {
+            coverageTowerId == it.id && coverageRadiusMetres > 0
+        }
+        val shape = if (site == null) emptyFeatures() else {
+            val points = CoverageEstimate.ring(site.latitude, site.longitude,
+                coverageRadiusMetres).map { (lat, lon) -> Point.fromLngLat(lon, lat) }
+            FeatureCollection.fromFeatures(arrayOf(
+                Feature.fromGeometry(Polygon.fromLngLats(listOf(points)))
+            ))
+        }
+        source.setGeoJson(shape)
+    }
+
     private fun showElevationProfile(site: TowerSite) {
         // Manual position is an independent valid DEM origin. GPS is required
         // only in automatic mode; compass aiming still needs real sensor GPS.
@@ -3998,20 +4421,21 @@ class MainActivity : Activity(), SensorEventListener {
                 header.text = originLabel + ": " + a + "   ·   Вышка: " + b +
                     "\nПерепад: " + diff
                 detailsLine.text = "Коснитесь линии рельефа для просмотра высоты"
-                val mast = site.height?.trim()?.replace(',', '.')?.let {
-                    Regex("^([0-9]+(?:\\.[0-9]+)?)\\s*(?:м|m)?$",
-                        RegexOption.IGNORE_CASE).matchEntire(it)
-                        ?.groupValues?.getOrNull(1)?.toDoubleOrNull()
-                }?.takeIf { it in 1.0..500.0 }
-                if (mast != null) {
-                    graph.towerHeightMeters = mast
-                    caveat.text = "Пунктир — условная прямая до верха конструкции " +
-                        "(высота " + mast.toInt() + " м по OSM), не до антенны. " +
-                        "Не учтены здания, деревья и зона Френеля.\n" + terrain.source
+                val chosenHeight = TowerHeightPolicy.resolve(site.height,
+                    getPreferences(Context.MODE_PRIVATE).getInt("height_scenario_m", 30)
+                        .coerceIn(5, 100))
+                graph.towerHeightMeters = chosenHeight.metres
+                caveat.text = if (chosenHeight.measured) {
+                    "Пунктир до вершины конструкции (" +
+                        chosenHeight.metres.toInt() + " м по данным источника). " +
+                        "Это НЕ подтверждённая высота антенны. Не учтены здания, " +
+                        "деревья и зона Френеля.\n" + terrain.source
                 } else {
-                    caveat.text = "Высота антенны неизвестна: достоверную линию " +
-                        "радиовидимости построить нельзя. Не учтены здания и деревья.\n" +
-                        terrain.source
+                    "Пунктир — ИЛЛЮСТРАТИВНЫЙ сценарий высоты " +
+                        chosenHeight.metres.toInt() + " м, а не реальная вышка. " +
+                        "Сценарий можно изменить в настройках · Вышки и рельеф. " +
+                        "Для макросоты ITU-R использует 30 м как типовой параметр модели. " +
+                        "Не учтены здания, деревья и зона Френеля.\n" + terrain.source
                 }
             }
         }
@@ -4093,16 +4517,24 @@ class MainActivity : Activity(), SensorEventListener {
             gpsForAim == null -> "Наведение: включите геолокацию и дождитесь GPS / Wi-Fi"
             else -> "Наведение: поверните телефон к вышке (совпадение ±5°)"
         }
+        val evidence = OperatorEvidence.inspect(nearest)
         detailBody.text = listOfNotNull(
-            "Оператор: " + (nearest.operator ?: "не указан"),
+            "Оператор: " + (if (nearest.operator != null) nearest.operator
+                else evidence.operator?.let { "предположительно " + it }
+                    ?: "не определён"),
+            evidence.explanation,
             aimInfo,
             gpsForAim?.takeIf { it.hasAccuracy() && it.accuracy > 70f }?.let {
                 "Ориентирование приблизительное: точность GPS ±" + it.accuracy.toInt() + " м"
             },
-            if (!nearest.source.startsWith("OpenStreetMap"))
-                "Примерное положение радиосоты · НЕ координата физической мачты"
-            else if (nearest.mobile) "Объект связи из OpenStreetMap (OSM)"
-            else "Назначение вышки не подтверждено",
+            when {
+                nearest.id.startsWith("user/") ->
+                    "Локальная запись пользователя · координаты не проверены"
+                !nearest.source.startsWith("OpenStreetMap") ->
+                    "Примерное положение радиосоты · НЕ координата физической мачты"
+                nearest.mobile -> "Объект связи из OpenStreetMap (OSM)"
+                else -> "Назначение вышки не подтверждено"
+            },
             nearest.technology?.let { "Технологии: " + it },
             nearest.height?.let { "Высота: " + it },
             nearest.samples?.let { "Наблюдений в базе: " + it },
@@ -4120,7 +4552,13 @@ class MainActivity : Activity(), SensorEventListener {
             "Источник: " + nearest.url
         ).joinToString("\n")
         profileButton.visibility = View.VISIBLE
+        coverageButton.visibility = View.VISIBLE
+        manualTowerActions.visibility = if (nearest.id.startsWith("user/"))
+            View.VISIBLE else View.GONE
+        photoButton.visibility = if (userTowerStore.photoFor(nearest.id) != null)
+            View.VISIBLE else View.GONE
         details.visibility = View.VISIBLE
+        updateCoverageOverlay()
         syncYandexObjects()
     }
 

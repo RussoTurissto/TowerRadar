@@ -28,6 +28,7 @@ class KhakiDialogBuilder(private val activity: Activity, private val palette: Kh
     private var chosen = -1
     private var choiceCallback: ((DialogInterface, Int) -> Unit)? = null
     private var embedded: View? = null
+    private var maxEmbeddedHeightDp: Int? = null
     private var positive: Pair<String, ((DialogInterface, Int) -> Unit)?>? = null
     private var negative: Pair<String, ((DialogInterface, Int) -> Unit)?>? = null
     private var neutral: Pair<String, ((DialogInterface, Int) -> Unit)?>? = null
@@ -35,6 +36,9 @@ class KhakiDialogBuilder(private val activity: Activity, private val palette: Kh
     fun setTitle(value: CharSequence): KhakiDialogBuilder = apply { heading = value.toString() }
     fun setMessage(value: CharSequence): KhakiDialogBuilder = apply { description = value.toString() }
     fun setView(view: View): KhakiDialogBuilder = apply { embedded = view }
+    fun setMaxContentHeightDp(dp: Int): KhakiDialogBuilder = apply {
+        maxEmbeddedHeightDp = dp.coerceIn(140, 660)
+    }
     fun setItems(values: Array<String>, action: (DialogInterface, Int) -> Unit): KhakiDialogBuilder =
         apply { choices = values; chosen = -1; choiceCallback = action }
     fun setSingleChoiceItems(values: Array<String>, selected: Int,
@@ -173,7 +177,8 @@ class KhakiDialogBuilder(private val activity: Activity, private val palette: Kh
             if (embedded != null) dp(95) else 0
         val maximumHeight = (displayHeight * 0.66f).toInt()
         outer.addView(scroll, LinearLayout.LayoutParams(-1,
-            if (estimate > maximumHeight) maximumHeight else -2))
+            if (maxEmbeddedHeightDp != null) min(maximumHeight, dp(maxEmbeddedHeightDp!!))
+            else if (estimate > maximumHeight) maximumHeight else -2))
 
         val actions = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
