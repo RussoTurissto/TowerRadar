@@ -1056,6 +1056,7 @@ class MainActivity : Activity(), SensorEventListener {
                 val offlineProvider = MapSources.providers.first { it.id == "openfreemap-offline" }
                 useMapChoice(offlineProvider)
                 offlineAreas.create(name, bounds, radiusKm, zoom) { state ->
+                    if (!isDestroyed && !isFinishing) mapStatus.text = state.message
                     if (!isDestroyed && !isFinishing && state.complete) {
                         Toast.makeText(this, state.message, Toast.LENGTH_LONG).show()
                     } else if (!isDestroyed && !isFinishing &&
@@ -1125,6 +1126,7 @@ class MainActivity : Activity(), SensorEventListener {
                         }
                         1 -> {
                             offlineAreas.resume(area) { state ->
+                                if (!isFinishing && !isDestroyed) mapStatus.text = state.message
                                 if (!isFinishing && !isDestroyed &&
                                     (state.complete || state.message.startsWith("Ошибка") ||
                                         state.message.startsWith("Лимит"))) {

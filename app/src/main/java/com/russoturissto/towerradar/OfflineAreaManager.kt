@@ -90,7 +90,18 @@ class OfflineAreaManager(private val activity: Activity) {
         terrain.download(region.id, area.bounds, area.radiusKm) { progress ->
             activity.runOnUiThread {
                 if (!activity.isDestroyed && !activity.isFinishing) {
-                    if (progress.complete) update(State("Рельеф сохранён: ${progress.total} тайлов", false))
+                    if (progress.complete) {
+                        region.getStatus(object : OfflineRegion.OfflineRegionStatusCallback {
+                            override fun onStatus(status: OfflineRegionStatus?) {
+                                val ready = status?.isComplete == true
+                                update(State(if (ready) "Карта и рельеф полностью готовы"
+                                    else "Рельеф готов: ${progress.total} тайлов; карта ещё загружается", ready))
+                            }
+                            override fun onError(error: String?) {
+                                update(State("Рельеф готов; статус карты неизвестен", false))
+                            }
+                        })
+                    }
                     else if (progress.error != null) update(State("Рельеф: ${progress.error}", false))
                 }
             }
@@ -106,8 +117,9 @@ class OfflineAreaManager(private val activity: Activity) {
                 }
                 if (status.isComplete) {
                     region.setDownloadState(OfflineRegion.STATE_INACTIVE)
+                    val terrainDone = terrainReady(area)
                     update(State("Карта загружена полностью на масштабах 6–${area.maxZoom}." +
-                        if (terrainReady(area)) " Рельеф готов." else " Рельеф загружается.", true))
+                        if (terrainDone) " Рельеф готов." else " Рельеф загружается.", terrainDone))
                 } else if (status.isRequiredResourceCountPrecise &&
                     status.requiredResourceCount > 0L) {
                     val pct = status.completedResourceCount * 100 / status.requiredResourceCount
