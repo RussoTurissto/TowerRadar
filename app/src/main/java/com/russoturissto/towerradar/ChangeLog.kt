@@ -3,6 +3,14 @@ package com.russoturissto.towerradar
 /** Bundled release notes always work without connectivity. */
 object ChangeLog {
     fun forVersion(version: String): String = when (version) {
+        "0.28.2" -> listOf(
+            "• Удалены 6 неиспользуемых картографических подложек из списка и настроек.",
+            "• Старый выбор удалённой карты автоматически заменяется на OpenStreetMap.",
+            "• В OpenAndroMaps добавлена инструкция по скачиванию V5-карт и выбору файла .map.",
+            "• MapTiler Elevation сохранён только как резервный сервис высот.",
+            "• Офлайн-карты, вышки, GPS, компас и обновления APK не изменены."
+        ).joinToString("\n")
+
         "0.27.5" -> listOf(
             "• При каждом запуске проверяется новая версия TowerRadar.",
             "• Обновление скачивается, проверяется и передаётся на установку Android внутри приложения.",

@@ -6,7 +6,7 @@ enum class OfflineMapCapability { REGIONAL_DOWNLOAD, VIEWED_TILE_CACHE, NO_REGIO
 object OfflineMapPolicy {
     fun capability(providerId: String): OfflineMapCapability = when (providerId) {
         "openfreemap-offline" -> OfflineMapCapability.REGIONAL_DOWNLOAD
-        "yandex", "osmfr", "osm", "osmde", "osmhot" ->
+        "yandex", "osm" ->
             OfflineMapCapability.VIEWED_TILE_CACHE
         else -> OfflineMapCapability.NO_REGION_DOWNLOAD
     }
