@@ -23,6 +23,8 @@ object MapSources {
         MapProvider("openfreemap-offline", "OpenFreeMap · офлайн", 
             OfflineAreaPolicy.OFFLINE_STYLE,
             "© OpenFreeMap · © OpenStreetMap contributors"),
+        MapProvider("openandromaps-local", "OpenAndroMaps · локальная",
+            "", "© OpenAndroMaps · © OpenStreetMap contributors"),
         MapProvider("osmfr", "OSM France · местные названия",
             "https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png",
             "© OpenStreetMap contributors · OpenStreetMap France"),
@@ -73,7 +75,7 @@ object MapSources {
     val providers = allProviders.filter { it.id != "2gis" && !it.id.startsWith("google-") }
     fun yandexWeb(provider: MapProvider) = provider.id.startsWith("yandex-js-")
     fun mapTiler(provider: MapProvider) = provider.id.startsWith("maptiler-")
-    fun unkeyed(): List<MapProvider> = providers.filter { it.keyPref == null }
+    fun unkeyed(): List<MapProvider> = providers.filter { it.keyPref == null && it.id != "openandromaps-local" }
 
     fun tileTemplate(provider: MapProvider, key: String = "", session: String = ""): String {
         if (provider.keyPref != null) require(key.isNotBlank()) { "Требуется ключ " + provider.name }
@@ -127,7 +129,7 @@ object MapSources {
 
     fun reachable(provider: MapProvider, lat: Double, lon: Double, key: String = ""): Boolean {
         if (provider.keyPref != null && key.isBlank()) return false
-        if (provider.id == "openfreemap-offline" ||
+        if (provider.id == "openandromaps-local" || provider.id == "openfreemap-offline" ||
             provider.id.startsWith("google-") || yandexWeb(provider) || mapTiler(provider))
             return false // session, WebView or vector style, not directly testable as PNG
         val connection = (URL(sampleTileUrl(provider, lat, lon, key)).openConnection() as HttpURLConnection)

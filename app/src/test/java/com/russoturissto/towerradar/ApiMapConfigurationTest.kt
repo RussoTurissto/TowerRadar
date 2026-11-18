@@ -17,6 +17,15 @@ class ApiMapConfigurationTest {
             .all { it.keyPref == "map_key_maptiler" })
     }
 
+    @Test fun localMapsforgeIsSelectableButNeverProbedAsAnInternetHost() {
+        val local = MapSources.providers.single { it.id == "openandromaps-local" }
+        assertTrue(local.keyPref == null)
+        assertTrue(local.tiles.isEmpty())
+        assertFalse(MapSources.unkeyed().any { it.id == local.id })
+        assertFalse(MapSources.reachable(local, 49.0, 32.0))
+        assertEquals("openfreemap-offline", MapSources.providers.first().id)
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun yandexJsCannotUseUndocumentedRasterTileEndpoints() {
         MapSources.tileTemplate(MapSources.providers.first { it.id == "yandex-js-hybrid" },

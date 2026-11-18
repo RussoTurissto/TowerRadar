@@ -9,8 +9,8 @@ android {
         applicationId = "com.russoturissto.towerradar"
         minSdk = 26
         targetSdk = 35
-        versionCode = 32
-        versionName = "0.27.5"
+        versionCode = 33
+        versionName = "0.28.0"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -21,6 +21,9 @@ android {
 }
 dependencies {
     implementation("org.maplibre.gl:android-sdk:13.7.1")
+    implementation("org.mapsforge:mapsforge-map-android:0.25.0")
+    implementation("org.mapsforge:mapsforge-map-reader:0.25.0")
+    implementation("org.mapsforge:mapsforge-themes:0.25.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.core:core:1.15.0")
     implementation("com.google.android.gms:play-services-location:21.3.0")

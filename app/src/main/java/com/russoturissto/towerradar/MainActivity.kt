@@ -171,6 +171,8 @@ class MainActivity : Activity(), SensorEventListener {
     private var offlineSelectionEnabled = false
     private lateinit var mapView: MapView
     private var yandexWebMap: YandexWebMap? = null
+    private var localMapTiles: LocalMapsforgeTiles? = null
+    private var localMapGeneration = 0
     private lateinit var profileButton: Button
     private lateinit var locationFusion: LocationFusion
     private val cellExecutor = Executors.newSingleThreadExecutor()
@@ -329,12 +331,26 @@ class MainActivity : Activity(), SensorEventListener {
     private fun applyBasemap(provider: MapProvider, key: String = "",
                              session: GoogleTileSession? = null) {
         val current = map ?: return
+        if (provider.id == "openandromaps-local" && localMapTiles == null) {
+            val saved = getPreferences(Context.MODE_PRIVATE).getString("local_map_uri", null)
+            if (saved == null) pickLocalMapFile()
+            else openLocalMap(Uri.parse(saved), false)
+            return
+        }
         if (MapSources.yandexWeb(provider)) {
             showYandexWeb(provider, key)
             return
         }
         yandexWebMap?.hide()
         mapView.visibility = View.VISIBLE
+        // Local HTTP tile requests must run even in Android airplane mode.
+        // Restore automatic connectivity detection for every other provider.
+        MapLibre.setConnected(if (provider.id == "openandromaps-local") true else null)
+        if (provider.id != "openandromaps-local") {
+            ++localMapGeneration
+            localMapTiles?.close()
+            localMapTiles = null
+        }
         if (provider.id.startsWith("google-") && (session == null || !session.valid())) {
             mapStatus.text = "Google · требуется действующий сеанс Map Tiles API"
             return
@@ -368,7 +384,9 @@ class MainActivity : Activity(), SensorEventListener {
                     }
                 })
         }
-        current.setStyle(MapSources.style(provider, key, session?.token.orEmpty())) { style ->
+        val selectedStyle = if (provider.id == "openandromaps-local")
+            localMapTiles!!.style() else MapSources.style(provider, key, session?.token.orEmpty())
+        current.setStyle(selectedStyle) { style ->
             if (palette.dark && (provider.keyPref == null || provider.id == "yandex")) {
                 (style.getLayer("basemap-layer") as? RasterLayer)?.setProperties(
                     PropertyFactory.rasterBrightnessMax(0.66f),
@@ -642,6 +660,12 @@ class MainActivity : Activity(), SensorEventListener {
 
 
     private fun useMapChoice(provider: MapProvider) {
+        if (provider.id == "openandromaps-local") {
+            val saved = getPreferences(Context.MODE_PRIVATE).getString("local_map_uri", null)
+            if (saved == null) pickLocalMapFile()
+            else openLocalMap(Uri.parse(saved), true)
+            return
+        }
         val key = provider.keyPref?.let {
             getPreferences(Context.MODE_PRIVATE).getString(it, "").orEmpty()
         }.orEmpty()
@@ -897,12 +921,110 @@ class MainActivity : Activity(), SensorEventListener {
             }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
     }
 
+    private fun pickLocalMapFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        try {
+            startActivityForResult(intent, 6203)
+        } catch (_: Exception) {
+            Toast.makeText(this, "Не удалось открыть выбор файла карты",
+                Toast.LENGTH_LONG).show()
+            restoreLocalSourceSpinner()
+        }
+    }
+
+    private fun restoreLocalSourceSpinner() {
+        if (!::sourceSpinner.isInitialized) return
+        val selectedId = getPreferences(Context.MODE_PRIVATE)
+            .getString("map_provider", "auto")
+        val index = MapSources.providers.indexOfFirst { it.id == selectedId } + 1
+        if (sourceSpinner.selectedItemPosition != index) sourceSpinner.setSelection(index)
+    }
+
+    /** Read and validate the selected map on a worker before changing the basemap. */
+    private fun openLocalMap(uri: Uri, useAsSelected: Boolean) {
+        val provider = MapSources.providers.first { it.id == "openandromaps-local" }
+        if (localMapTiles?.uri == uri) {
+            if (useAsSelected) getPreferences(Context.MODE_PRIVATE).edit()
+                .putString("map_provider", provider.id).apply()
+            applyBasemap(provider)
+            return
+        }
+        val generation = ++localMapGeneration
+        mapStatus.text = "Открываем OpenAndroMaps из памяти телефона…"
+        executor.execute {
+            var opened: LocalMapsforgeTiles? = null
+            try {
+                val ready = LocalMapsforgeTiles.open(applicationContext, uri)
+                opened = ready
+                runOnUiThread {
+                    if (isDestroyed || isFinishing || generation != localMapGeneration) {
+                        ready.close()
+                        return@runOnUiThread
+                    }
+                    localMapTiles?.close()
+                    localMapTiles = ready
+                    val prefs = getPreferences(Context.MODE_PRIVATE)
+                    prefs.edit().putString("local_map_uri", uri.toString())
+                        .putString("map_provider", provider.id).apply()
+                    restoreLocalSourceSpinner()
+                    applyBasemap(provider)
+                    Toast.makeText(this, "Локальная карта подключена",
+                        Toast.LENGTH_SHORT).show()
+                }
+            } catch (error: Exception) {
+                opened?.close()
+                runOnUiThread {
+                    if (!isDestroyed && !isFinishing && generation == localMapGeneration) {
+                        mapStatus.text = "Не удалось открыть карту: " +
+                            error.message.orEmpty().take(120)
+                        Toast.makeText(this, mapStatus.text, Toast.LENGTH_LONG).show()
+                        restoreLocalSourceSpinner()
+                        // An inaccessible saved document must not blank the launch screen.
+                        if (!useAsSelected && localMapTiles == null) {
+                            getPreferences(Context.MODE_PRIVATE).edit()
+                                .putString("map_provider", "osmfr").apply()
+                            applyBasemap(MapSources.providers.first { it.id == "osmfr" })
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showLocalMapsforgeMenu() {
+        val stored = getPreferences(Context.MODE_PRIVATE)
+            .getString("local_map_uri", null)
+        val state = when {
+            localMapTiles != null -> "карта открыта"
+            stored != null -> "файл выбран, можно открыть"
+            else -> "карта не выбрана"
+        }
+        KhakiDialogBuilder(this, palette).setTitle("Офлайн-карты OpenAndroMaps")
+            .setMessage(
+                "Карта читается прямо из памяти телефона, без копирования и интернета.\n" +
+                "Выбирайте распакованный файл .map, не ZIP-архив.\n\n" +
+                "Состояние: " + state
+            )
+            .setItems(arrayOf("Выбрать файл карты (.map)",
+                "Открыть выбранную карту")) { _, n ->
+                if (n == 0 || stored == null) pickLocalMapFile()
+                else openLocalMap(Uri.parse(stored), true)
+            }
+            .setNegativeButton("Назад") { _, _ -> showMapsMenu() }.show()
+    }
+
     private fun showMapsMenu() {
         KhakiDialogBuilder(this, palette).setTitle("Карты и офлайн")
             .setItems(arrayOf("Картографические подложки · в панели Подробнее",
                 "Подключения API · Яндекс / MapTiler / OpenCellID",
                 "Офлайн-области и кеш · карты, рельеф, вышки",
-                "Кеш просмотренных карт · лимит и очистка")) { _, n ->
+                "Кеш просмотренных карт · лимит и очистка",
+                "Офлайн-карты OpenAndroMaps · выбрать файл")) { _, n ->
                 when (n) {
                     0 -> {
                         if (mapFullscreen) setMapFullscreen(false)
@@ -911,6 +1033,7 @@ class MainActivity : Activity(), SensorEventListener {
                     1 -> showConnections()
                     2 -> showOfflineAreaInfo()
                     3 -> showCacheSettings()
+                    4 -> showLocalMapsforgeMenu()
                 }
             }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
     }
@@ -1022,7 +1145,10 @@ class MainActivity : Activity(), SensorEventListener {
                         else "") +
                     "Заранее скачать весь район нельзя. Размер кеша настраивается отдельно."
             OfflineMapCapability.NO_REGION_DOWNLOAD ->
-                "Предварительное скачивание региона из этого сервиса недоступно. " +
+                if (provider.id == "openandromaps-local")
+                    "Это уже локальная офлайн-карта. Её не нужно скачивать по областям. " +
+                        "Исходный файл .map остаётся в памяти телефона."
+                else "Предварительное скачивание региона из этого сервиса недоступно. " +
                     "Режим браузерной карты и условия поставщика не дают TowerRadar " +
                     "возможности гарантировать работу без сети."
         }
@@ -2023,6 +2149,21 @@ class MainActivity : Activity(), SensorEventListener {
     @Deprecated("Deprecated by Android")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 6203) {
+            val uri = data?.data
+            if (resultCode == Activity.RESULT_OK && uri != null) {
+                try {
+                    contentResolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    openLocalMap(uri, true)
+                } catch (_: Exception) {
+                    mapStatus.text = "Не удалось сохранить доступ к файлу карты"
+                    Toast.makeText(this, mapStatus.text, Toast.LENGTH_LONG).show()
+                    restoreLocalSourceSpinner()
+                }
+            } else restoreLocalSourceSpinner()
+            return
+        }
         if (requestCode == 6201) {
             if (resultCode == Activity.RESULT_OK) userTowerEditor?.onImagePicked(data?.data)
             return
@@ -5646,6 +5787,9 @@ class MainActivity : Activity(), SensorEventListener {
         apiExecutor.shutdownNow()
         cellExecutor.shutdownNow()
         yandexWebMap?.destroy()
+        ++localMapGeneration
+        localMapTiles?.close()
+        localMapTiles = null
         mapView.onDestroy()
         super.onDestroy()
     }
