@@ -35,6 +35,14 @@ class ChangeLogTest {
         assertTrue(notes.contains("любй") || notes.contains("любой"))
         assertTrue(notes.contains("не скачивает"))
     }
+    @Test fun automaticUpdatesAndShortStatusMessagesAreDocumented() {
+        val notes = ChangeLog.forVersion("0.27.5")
+        assertTrue(notes.contains("каждом запуске"))
+        assertTrue(notes.contains("Android"))
+        assertTrue(notes.contains("OpenStreetMap"))
+        assertTrue(notes.contains("3 секунды"))
+        assertTrue(notes.contains("Системные уведомления"))
+    }
     @Test fun unknownVersionIsHonest() {
         assertFalse(ChangeLog.forVersion("9.99.0").contains("30 км"))
     }
