@@ -25,6 +25,24 @@ class ReleaseFeedTest {
            "browser_download_url":"https://github.com/RussoTurissto/TowerRadar/releases/download/v0.26.0/TowerRadar-v0.26.0.apk"}]}]"""
         assertNull(ReleaseFeed.parse(json, true))
     }
+    @Test fun latestReleaseSelectsNewestVersionAcrossChannels() {
+        val body = """[{"tag_name":"v0.28.0","name":"Stable","prerelease":false,
+          "body":"Исправлено меню; Улучшены карты",
+          "assets":[{"name":"TowerRadar-v0.28.0.apk","size":53000000,
+           "browser_download_url":"https://github.com/RussoTurissto/TowerRadar/releases/download/v0.28.0/TowerRadar-v0.28.0.apk",
+           "digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]},
+          {"tag_name":"v0.28.1","name":"Test","prerelease":true,
+          "body":"Новый режим; Исправлена ошибка",
+          "assets":[{"name":"TowerRadar-v0.28.1.apk","size":53000000,
+           "browser_download_url":"https://github.com/RussoTurissto/TowerRadar/releases/download/v0.28.1/TowerRadar-v0.28.1.apk",
+           "digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}]"""
+        val latest = ReleaseFeed.newest(body)!!
+        assertEquals("0.28.1", latest.version)
+        assertTrue(latest.prerelease)
+        assertTrue(ReleaseFeed.summary(latest).contains("• Новый режим"))
+        assertTrue(ReleaseFeed.summary(latest).contains("• Исправлена ошибка"))
+    }
+
     @Test fun untrustedFileIsNotAccepted() {
         val json = """[{"tag_name":"v0.24.0","prerelease":true,
           "assets":[{"name":"malware.apk","size":50000000,

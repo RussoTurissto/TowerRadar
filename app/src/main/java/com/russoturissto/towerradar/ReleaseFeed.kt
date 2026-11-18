@@ -12,7 +12,8 @@ data class TowerRelease(
     val apkUrl: String,
     val apkBytes: Long,
     val digest: String?,
-    val releasePage: String
+    val releasePage: String,
+    val notes: String = ""
 )
 
 /** Unauthenticated public GitHub Releases; no GitHub credentials or background notifications. */
@@ -54,13 +55,43 @@ object ReleaseFeed {
                 } ?: continue
                 return TowerRelease(tag.removePrefix("v"), obj.optString("name"),
                     prerelease, url, file.optLong("size"), digest,
-                    "https://github.com/" + REPO + "/releases/tag/" + tag)
+                    "https://github.com/" + REPO + "/releases/tag/" + tag,
+                    obj.optString("body"))
             }
         }
         return null
     }
 
-    fun query(testChannel: Boolean): TowerRelease? {
+    /** The newest supported release across both channels, from one GitHub request. */
+    fun newest(json: String): TowerRelease? {
+        val test = parse(json, true)
+        val stable = parse(json, false)
+        return when {
+            test == null -> stable
+            stable == null -> test
+            isNewer(test.version, stable.version) -> test
+            else -> stable
+        }
+    }
+
+    /** Plain-language text for the in-app update prompt; never renders remote HTML. */
+    fun summary(release: TowerRelease): String {
+        val entries = release.notes.replace("\r", "")
+            .split(Regex("[;\\n]+"))
+            .map { it.trim().trimStart('-', '*', '•', ' ').trim() }
+            .filter { it.isNotBlank() }
+            .take(4)
+        val points = if (entries.isEmpty()) listOf(release.title.ifBlank {
+            "Исправления и улучшения TowerRadar"
+        }) else entries
+        return points.joinToString("\n") { "• " + it.take(150) }
+    }
+
+    fun queryLatest(): TowerRelease? = newest(fetchJson())
+
+    fun query(testChannel: Boolean): TowerRelease? = parse(fetchJson(), testChannel)
+
+    private fun fetchJson(): String {
         val c = URL("https://api.github.com/repos/" + REPO +
             "/releases?per_page=25").openConnection() as HttpURLConnection
         c.connectTimeout = 7500
@@ -70,7 +101,7 @@ object ReleaseFeed {
         return try {
             if (c.responseCode != 200)
                 throw IllegalStateException("GitHub API: HTTP " + c.responseCode)
-            parse(c.inputStream.bufferedReader().use { it.readText() }, testChannel)
+            c.inputStream.bufferedReader().use { it.readText() }
         } finally { c.disconnect() }
     }
 }
