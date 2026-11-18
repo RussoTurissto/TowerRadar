@@ -343,6 +343,9 @@ class MainActivity : Activity(), SensorEventListener {
         }
         yandexWebMap?.hide()
         mapView.visibility = View.VISIBLE
+        // Local HTTP tile requests must run even in Android airplane mode.
+        // Restore automatic connectivity detection for every other provider.
+        MapLibre.setConnected(if (provider.id == "openandromaps-local") true else null)
         if (provider.id != "openandromaps-local") {
             ++localMapGeneration
             localMapTiles?.close()
