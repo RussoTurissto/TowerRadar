@@ -247,8 +247,11 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var progressStrip: LinearLayout
     private lateinit var progressLabel: TextView
     private lateinit var progressBar: ProgressBar
+    private lateinit var resultBanner: TextView
     private val progressHandler = Handler(Looper.getMainLooper())
     private var progressSequence = 0
+    private var progressWindowStart = 0L
+    private var resultBannerSequence = 0
     private var progressRequested = false
     private var lastTowerCardVisible = false
     private var selectedOriginPoint: LatLng? = null
@@ -918,15 +921,13 @@ class MainActivity : Activity(), SensorEventListener {
                 "Пользовательские вышки · управление",
                 "Высота антенны · расчётный сценарий",
                 "Хранилище · данные и кеш",
-                "Резервная копия · экспорт / восстановление",
-                "Уведомления о состоянии базы вышек")) { _, n ->
+                "Резервная копия · экспорт / восстановление")) { _, n ->
                 when (n) {
                     0 -> showAddUserTower()
                     1 -> showUserTowers()
                     2 -> showHeightScenario()
                     3 -> showTowerStorageSettings()
                     4 -> showBackupMenu()
-                    5 -> enableDatabaseNotifications()
                 }
             }.setNegativeButton("Назад") { _, _ -> showSettings() }.show()
     }
@@ -2858,6 +2859,7 @@ class MainActivity : Activity(), SensorEventListener {
             android.R.style.Theme_Material_NoActionBar
         else android.R.style.Theme_Material_Light_NoActionBar)
         super.onCreate(state)
+        clearObsoleteDatabaseNotifications()
         palette = KhakiTheme.palette(this, mode)
         window.statusBarColor = palette.canvas
         window.navigationBarColor = palette.canvas
@@ -3639,6 +3641,22 @@ class MainActivity : Activity(), SensorEventListener {
             FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply {
                 setMargins(dp(12), 0, dp(12), dp(112))
             })
+        resultBanner = text("", 12.5f, palette.text).apply {
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            gravity = Gravity.CENTER
+            background = rounded(palette.surface, 15)
+            elevation = dp(12).toFloat()
+            setPadding(dp(15), dp(9), dp(15), dp(9))
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            visibility = View.GONE
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+        rootView.addView(resultBanner,
+            FrameLayout.LayoutParams(-2, -2,
+                Gravity.CENTER_HORIZONTAL or Gravity.BOTTOM).apply {
+                bottomMargin = dp(106)
+            })
         // Crosshair mode is a separate, focused location picker: drag the map
         // under the reticle, tap a desired point or zoom for precise placement.
         crosshairReticle = CrosshairView(this, palette.dark).apply {
@@ -4393,6 +4411,16 @@ class MainActivity : Activity(), SensorEventListener {
             else -> View.VISIBLE
         }
         if (progressStrip.visibility != wanted) progressStrip.visibility = wanted
+        if (::resultBanner.isInitialized) {
+            resultBanner.maxWidth = (rootView.width - systemLeftInset -
+                systemRightInset - dp(48)).coerceAtLeast(dp(150))
+            val bannerLp = resultBanner.layoutParams as FrameLayout.LayoutParams
+            val nextBottom = maxOf(target.progressBottom, footer + dp(12))
+            if (bannerLp.bottomMargin != nextBottom) {
+                bannerLp.bottomMargin = nextBottom
+                resultBanner.layoutParams = bannerLp
+            }
+        }
     }
 
     private fun updateMapChrome(sheetHeight: Int) {
@@ -4636,8 +4664,9 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun progressStep(label: String, processed: Int? = null, total: Int? = null) {
         runOnUiThread {
-            if (!::progressStrip.isInitialized || isDestroyed) return@runOnUiThread
-            ++progressSequence
+            if (!::progressStrip.isInitialized || isDestroyed ||
+                !TransientStatusPolicy.inWindow(
+                    progressWindowStart, SystemClock.uptimeMillis())) return@runOnUiThread
             val measurable = total != null && total > 0 && processed != null
             if (measurable) {
                 val part = processed!!
@@ -4656,55 +4685,52 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
-    private fun enableDatabaseNotifications() {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 108)
-        } else Toast.makeText(this, "Уведомления уже разрешены", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun notifyDatabaseResult(message: String, success: Boolean) {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED) return
+    private fun clearObsoleteDatabaseNotifications() {
         try {
             val manager = getSystemService(Context.NOTIFICATION_SERVICE)
                 as android.app.NotificationManager
-            val channel = "towerradar_database_updates"
-            if (Build.VERSION.SDK_INT >= 26) {
-                manager.createNotificationChannel(android.app.NotificationChannel(
-                    channel, "Обновление базы вышек",
-                    android.app.NotificationManager.IMPORTANCE_DEFAULT))
-            }
-            val notification = android.app.Notification.Builder(this, channel)
-                .setSmallIcon(android.R.drawable.stat_notify_sync)
-                .setContentTitle(if (success) "База TowerRadar проверена"
-                    else "Обновление базы не выполнено")
-                .setContentText(message.take(150))
-                .setAutoCancel(true)
-                .build()
-            manager.notify(2601, notification)
-        } catch (_: Exception) { /* In-app status always remains available. */ }
+            manager.cancel(2601)
+            if (Build.VERSION.SDK_INT >= 26)
+                manager.deleteNotificationChannel("towerradar_database_updates")
+        } catch (_: Exception) { /* No runtime notification permission is needed. */ }
+    }
+
+    /** Small in-app result, centred immediately above the Подробнее footer. */
+    private fun showDatabaseResult(message: String, success: Boolean) {
+        if (!::resultBanner.isInitialized || isDestroyed || isFinishing) return
+        val ticket = ++resultBannerSequence
+        resultBanner.animate().cancel()
+        resultBanner.text = if (success) {
+            if (message.startsWith("Сохранённая")) "✓ База вышек актуальна"
+            else "✓ База вышек обновлена\n" +
+                message.removePrefix("Завершено · ").take(88)
+        } else "⚠ Не удалось обновить базу\n" +
+            message.removePrefix("Ошибка обновления: ").take(88)
+        resultBanner.contentDescription = resultBanner.text.toString()
+        resultBanner.alpha = 0f
+        resultBanner.visibility = View.VISIBLE
+        updateFloatingOverlayPositions()
+        resultBanner.animate().alpha(1f).setDuration(130L).start()
+        progressHandler.postDelayed({
+            if (resultBannerSequence != ticket || isDestroyed) return@postDelayed
+            resultBanner.animate().alpha(0f).setDuration(
+                TransientStatusPolicy.FADE_MS).withEndAction {
+                if (resultBannerSequence == ticket) {
+                    resultBanner.visibility = View.GONE
+                    resultBanner.alpha = 1f
+                }
+            }.start()
+        }, TransientStatusPolicy.RESULT_MS - TransientStatusPolicy.FADE_MS)
     }
 
     private fun progressEnd(message: String, success: Boolean) {
         runOnUiThread {
-            if (!::progressStrip.isInitialized || isDestroyed) return@runOnUiThread
-            val ticket = ++progressSequence
-            progressLabel.text = message
-            notifyDatabaseResult(message, success)
-            progressBar.isIndeterminate = false
-            progressBar.progress = if (success) 100 else 0
-            progressRequested = true
-            progressStrip.visibility = View.VISIBLE
-            updateFloatingOverlayPositions()
-            progressHandler.postDelayed({
-                if (progressSequence == ticket && ::progressStrip.isInitialized) {
-                    progressRequested = false
-                    progressStrip.visibility = View.GONE
-                }
-            }, if (success) 3500L else 7000L)
+            if (!::progressStrip.isInitialized || isDestroyed || isFinishing)
+                return@runOnUiThread
+            ++progressSequence // invalidate the pending three-second progress timer
+            progressRequested = false
+            progressStrip.visibility = View.GONE
+            showDatabaseResult(message, success)
         }
     }
 
@@ -4730,6 +4756,15 @@ class MainActivity : Activity(), SensorEventListener {
         val lon = point.longitude
         val range = radiusKm
         busy = true
+        progressWindowStart = SystemClock.uptimeMillis()
+        val windowTicket = ++progressSequence
+        progressHandler.postDelayed({
+            if (progressSequence == windowTicket && ::progressStrip.isInitialized &&
+                !isDestroyed) {
+                progressRequested = false
+                progressStrip.visibility = View.GONE
+            }
+        }, TransientStatusPolicy.PROGRESS_MS)
         refresh.isEnabled = false
         searchHere.isEnabled = false
         details.visibility = View.GONE
@@ -5518,12 +5553,6 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 108) {
-            Toast.makeText(this, if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED)
-                "Уведомления базы разрешены" else "Уведомления не разрешены",
-                Toast.LENGTH_SHORT).show()
-            return
-        }
         if (requestCode == 101) {
             if (hasLocation()) startLocationUpdates()
             else status.text = "Геолокация запрещена. Можно искать в центре карты."
@@ -5608,6 +5637,8 @@ class MainActivity : Activity(), SensorEventListener {
         mapView.onSaveInstanceState(outState)
     }
     override fun onDestroy() {
+        progressHandler.removeCallbacksAndMessages(null)
+        if (::resultBanner.isInitialized) resultBanner.animate().cancel()
         ++compassBounceGeneration
         compassBounceAnimator?.cancel()
         stopServingPulse()
