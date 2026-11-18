@@ -17,10 +17,10 @@ class AttributionUiPolicyTest {
         }
     }
 
-    @Test fun mapTilerShowsRequiredLicensingLink() {
-        for (id in listOf("maptiler-streets", "maptiler-satellite", "maptiler-hybrid"))
-            assertEquals("https://www.maptiler.com/copyright/",
-                AttributionUiPolicy.creditLink(id))
+    @Test fun retiredMapsNoLongerHaveAttributionActions() {
+        for (id in listOf("osmfr", "osmde", "osmhot",
+                "maptiler-streets", "maptiler-satellite", "maptiler-hybrid"))
+            assertNull(AttributionUiPolicy.creditLink(id))
     }
 
     @Test fun googleMapProvidersKeepProviderAttribution() {

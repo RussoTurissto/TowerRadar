@@ -9,12 +9,19 @@ class ApiMapConfigurationTest {
         assertTrue(MapSources.allProviders.any { it.id == "2gis" })
         assertEquals(setOf("yandex-js-road", "yandex-js-satellite", "yandex-js-hybrid"),
             MapSources.providers.filter(MapSources::yandexWeb).map { it.id }.toSet())
-        assertEquals(setOf("maptiler-streets", "maptiler-satellite", "maptiler-hybrid"),
-            MapSources.providers.filter(MapSources::mapTiler).map { it.id }.toSet())
         assertTrue(MapSources.providers.filter(MapSources::yandexWeb)
             .all { it.keyPref == "map_key_yandex_js" })
-        assertTrue(MapSources.providers.filter(MapSources::mapTiler)
-            .all { it.keyPref == "map_key_maptiler" })
+    }
+
+    @Test fun sixRetiredProvidersAreNotSelectableOrIncludedInSourceList() {
+        val removed = setOf("osmfr", "osmde", "osmhot",
+            "maptiler-streets", "maptiler-satellite", "maptiler-hybrid")
+        assertTrue(removed.all(MapSources::isRetired))
+        assertTrue(MapSources.providers.none { it.id in removed })
+        assertTrue(MapSources.allProviders.none { it.id in removed })
+        assertTrue(MapSources.unkeyed().none { it.id in removed })
+        assertFalse(MapSources.isRetired("openandromaps-local"))
+        assertFalse(MapSources.isRetired("osm"))
     }
 
     @Test fun localMapsforgeIsSelectableButNeverProbedAsAnInternetHost() {
@@ -30,21 +37,6 @@ class ApiMapConfigurationTest {
     fun yandexJsCannotUseUndocumentedRasterTileEndpoints() {
         MapSources.tileTemplate(MapSources.providers.first { it.id == "yandex-js-hybrid" },
             "test-javascript-api-key")
-    }
-
-    @Test fun mapTilerUsesOfficialStyleUrl() {
-        val source = MapSources.providers.first { it.id == "maptiler-streets" }
-        assertTrue(MapSources.tileTemplate(source, "abc-123")
-            .startsWith("https://api.maptiler.com/maps/"))
-        assertTrue(MapSources.tileTemplate(source, "abc-123")
-            .contains("key=abc-123"))
-    }
-
-    @Test fun mapTilerSatelliteUsesRasterDatasetNotMissingVectorStyle() {
-        val satellite = MapSources.providers.first { it.id == "maptiler-satellite" }
-        val url = MapSources.sampleTileUrl(satellite, 52.52, 13.40, "free-test")
-        assertTrue(url.contains("/tiles/satellite-v2/"))
-        assertTrue(url.endsWith(".jpg?key=free-test"))
     }
 
     @Test fun googleHasThreeOfficialSessionBasedModes() {

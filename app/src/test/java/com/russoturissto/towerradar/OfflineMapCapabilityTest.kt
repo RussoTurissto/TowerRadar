@@ -7,9 +7,16 @@ class OfflineMapCapabilityTest {
     @Test fun onlyOfficiallySupportedOpenFreeMapHasRegionalDownload() {
         assertTrue(OfflineMapPolicy.canCreateRegion("openfreemap-offline"))
         for (id in listOf("yandex", "yandex-js-road", "yandex-js-satellite",
-                "yandex-js-hybrid", "maptiler-streets", "maptiler-satellite",
-                "maptiler-hybrid", "osm", "osmfr", "google-road")) {
+                "yandex-js-hybrid", "osm", "google-road")) {
             assertFalse("Never download a substitute for $id", OfflineMapPolicy.canCreateRegion(id))
+        }
+    }
+
+    @Test fun retiredBasemapIdsCannotDownloadOrClaimOfflineCache() {
+        for (id in listOf("osmfr", "osmde", "osmhot",
+                "maptiler-streets", "maptiler-satellite", "maptiler-hybrid")) {
+            assertEquals(OfflineMapCapability.NO_REGION_DOWNLOAD,
+                OfflineMapPolicy.capability(id))
         }
     }
 
