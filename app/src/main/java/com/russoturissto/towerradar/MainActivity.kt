@@ -956,8 +956,8 @@ class MainActivity : Activity(), SensorEventListener {
         executor.execute {
             var opened: LocalMapsforgeTiles? = null
             try {
-                opened = LocalMapsforgeTiles.open(applicationContext, uri)
-                val ready = opened
+                val ready = LocalMapsforgeTiles.open(applicationContext, uri)
+                opened = ready
                 runOnUiThread {
                     if (isDestroyed || isFinishing || generation != localMapGeneration) {
                         ready.close()
