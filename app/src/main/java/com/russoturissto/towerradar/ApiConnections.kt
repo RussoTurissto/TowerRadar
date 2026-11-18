@@ -96,22 +96,31 @@ object ApiConnections {
         } finally { connection.disconnect() }
     }
 
-    /** MapTiler vector style endpoint returns JSON, unlike PNG tile APIs. */
-    private fun styleCheck(url: String, name: String): ApiProbe {
-        val c = URL(url).openConnection() as HttpURLConnection
-        c.connectTimeout = 6500
-        c.readTimeout = 6500
+    /** Verify the optional terrain-only key, independently of map providers. */
+    fun checkMapTilerElevation(key: String, lat: Double, lon: Double): ApiProbe {
+        if (key.isBlank()) return ApiProbe(false, "Ключ не введён")
         return try {
-            val code = c.responseCode
-            if (code !in 200..299) failure(code, name)
-            else {
-                val response = c.inputStream.bufferedReader().use { it.readText().take(7000) }
-                if (response.contains("\"version\"") &&
-                    response.contains("\"sources\"")) {
-                    ApiProbe(true, "✓ Подключено · стиль карты получен", code)
-                } else ApiProbe(false, name + " · ответ не содержит стиль карты", code)
-            }
-        } finally { c.disconnect() }
+            val location = String.format(Locale.US, "%.6f,%.6f", lon, lat)
+            val connection = URL("https://api.maptiler.com/elevation/" + location +
+                ".json?key=" + encode(key)).openConnection() as HttpURLConnection
+            connection.connectTimeout = 6500
+            connection.readTimeout = 6500
+            try {
+                val code = connection.responseCode
+                if (code !in 200..299) failure(code, "MapTiler Elevation")
+                else {
+                    val values = JSONArray(connection.inputStream.bufferedReader()
+                        .use { it.readText().take(8192) })
+                    val point = values.optJSONArray(0)
+                    val altitude = point?.optDouble(2, Double.NaN) ?: Double.NaN
+                    if (altitude.isFinite())
+                        ApiProbe(true, "✓ Подключено · высоты доступны", code)
+                    else ApiProbe(false, "MapTiler Elevation · нет данных высот", code)
+                }
+            } finally { connection.disconnect() }
+        } catch (_: Exception) {
+            ApiProbe(false, "MapTiler Elevation · проверьте интернет и доступность API")
+        }
     }
 
     fun checkMap(provider: MapProvider, lat: Double, lon: Double, key: String): ApiProbe {
@@ -119,10 +128,6 @@ object ApiConnections {
         return try {
             when {
                 provider.id.startsWith("google-") -> googleSession(key, provider)
-                provider.id == "maptiler-satellite" ->
-                    tileCheck(MapSources.sampleTileUrl(provider, lat, lon, key), provider.name)
-                MapSources.mapTiler(provider) ->
-                    styleCheck(MapSources.tileTemplate(provider, key), provider.name)
                 MapSources.yandexWeb(provider) ->
                     ApiProbe(false, "Ключ JavaScript API проверяется при открытии WebView")
                 else -> tileCheck(MapSources.sampleTileUrl(provider, lat, lon, key), provider.name)

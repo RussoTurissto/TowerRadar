@@ -1,4 +1,4 @@
-name: Publish verified TowerRadar v0.28.1 APK
+name: Publish verified TowerRadar v0.28.2 APK
 on:
   workflow_run:
     workflows: ["Build Android APK"]
@@ -61,9 +61,9 @@ jobs:
           actual="$(sha256sum extracted/towerradar-signed.apk | awk '{print $1}')"
           test "$expected" = "$actual"
           # Publishing must never retag an APK built with an outdated version code.
-          test "$(grep -m1 'versionCode = ' app/build.gradle.kts | awk '{print $3}')" = "34"
-          test "$(grep -m1 'versionName = ' app/build.gradle.kts | cut -d '"' -f 2)" = "0.28.1"
-          cp extracted/towerradar-signed.apk TowerRadar-v0.28.1.apk
+          test "$(grep -m1 'versionCode = ' app/build.gradle.kts | awk '{print $3}')" = "35"
+          test "$(grep -m1 'versionName = ' app/build.gradle.kts | cut -d '"' -f 2)" = "0.28.2"
+          cp extracted/towerradar-signed.apk TowerRadar-v0.28.2.apk
           echo "APK SHA-256: $actual" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish direct GitHub Release APK download
@@ -73,15 +73,15 @@ jobs:
           TARGET_SHA: ${{ steps.selection.outputs.sha }}
         run: |
           set -euo pipefail
-          if gh release view v0.28.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit v0.28.1 --prerelease --repo "$GITHUB_REPOSITORY"
-            gh release upload v0.28.1 TowerRadar-v0.28.1.apk --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.28.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit v0.28.2 --prerelease --repo "$GITHUB_REPOSITORY"
+            gh release upload v0.28.2 TowerRadar-v0.28.2.apk --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.28.1 TowerRadar-v0.28.1.apk \
+            gh release create v0.28.2 TowerRadar-v0.28.2.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$TARGET_SHA" \
-              --title "TowerRadar v0.28.1 — исправление подписей OpenAndroMaps" \
-              --notes "TowerRadar 0.28.1: исправлен слишком крупный текст OpenAndroMaps на экранах высокой плотности; подписи поселений согласованы между соседними тайлами и не должны разрываться на их границах. Русские названия, офлайн-работа, вышки, перекрестие и существующие карты сохранены. Загрузка карт из GitHub пока не добавляется." \
+              --title "TowerRadar v0.28.2 — карты и инструкция OpenAndroMaps" \
+              --notes "TowerRadar 0.28.2: удалены шесть картографических подложек и все их пользовательские ссылки; устаревший выбор карты автоматически заменяется на OpenStreetMap. В меню OpenAndroMaps появилась инструкция по загрузке V5 .map с официального сайта, распаковке и подключению. Резервный сервис высот MapTiler Elevation сохранён отдельно, как и вышки, GPS, перекрестие и обновления APK." \
               --prerelease
           fi
-          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.28.1/TowerRadar-v0.28.1.apk" >> "$GITHUB_STEP_SUMMARY"
+          echo "Direct APK: https://github.com/$GITHUB_REPOSITORY/releases/download/v0.28.2/TowerRadar-v0.28.2.apk" >> "$GITHUB_STEP_SUMMARY"

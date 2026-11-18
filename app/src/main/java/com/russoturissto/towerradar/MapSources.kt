@@ -25,18 +25,9 @@ object MapSources {
             "© OpenFreeMap · © OpenStreetMap contributors"),
         MapProvider("openandromaps-local", "OpenAndroMaps · локальная",
             "", "© OpenAndroMaps · © OpenStreetMap contributors"),
-        MapProvider("osmfr", "OSM France · местные названия",
-            "https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png",
-            "© OpenStreetMap contributors · OpenStreetMap France"),
         MapProvider("osm", "OpenStreetMap · местные названия",
             "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
             "© OpenStreetMap contributors"),
-        MapProvider("osmde", "OSM Deutschland · местные названия",
-            "https://tile.openstreetmap.de/{z}/{x}/{y}.png",
-            "© OpenStreetMap contributors · OSM Deutschland"),
-        MapProvider("osmhot", "OSM HOT · местные названия",
-            "https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
-            "© OpenStreetMap contributors · HOT"),
         MapProvider("yandex", "Яндекс Карты · русский",
             "https://tiles.api-maps.yandex.ru/v1/tiles/?x={x}&y={y}&z={z}&l=map&lang=ru_RU&projection=web_mercator&scale=2&apikey={api_key}",
             "© Яндекс Карты", "map_key_yandex"),
@@ -47,16 +38,6 @@ object MapSources {
             "", "© Яндекс Карты", "map_key_yandex_js"),
         MapProvider("yandex-js-hybrid", "Яндекс JS · Гибрид",
             "", "© Яндекс Карты", "map_key_yandex_js"),
-        // Personal/noncommercial free API plan, subject to MapTiler limits.
-        MapProvider("maptiler-streets", "MapTiler · Карта",
-            "https://api.maptiler.com/maps/streets-v4/style.json?key={api_key}",
-            "© MapTiler · © OpenStreetMap contributors", "map_key_maptiler"),
-        MapProvider("maptiler-satellite", "MapTiler · Спутник",
-            "https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key={api_key}",
-            "© MapTiler · спутниковые данные", "map_key_maptiler"),
-        MapProvider("maptiler-hybrid", "MapTiler · Гибрид",
-            "https://api.maptiler.com/maps/hybrid/style.json?key={api_key}",
-            "© MapTiler · © OpenStreetMap contributors", "map_key_maptiler"),
         MapProvider("2gis", "2ГИС · русский",
             "https://tile0.maps.2gis.com/v2/tiles/online_sd/{z}/{x}/{y}.png?key={api_key}",
             "© 2ГИС", "map_key_2gis"),
@@ -74,7 +55,13 @@ object MapSources {
     // Paid/billing-required providers are hidden but their existing keys are not erased.
     val providers = allProviders.filter { it.id != "2gis" && !it.id.startsWith("google-") }
     fun yandexWeb(provider: MapProvider) = provider.id.startsWith("yandex-js-")
-    fun mapTiler(provider: MapProvider) = provider.id.startsWith("maptiler-")
+    // Legacy IDs only migrate saved preferences. These sources are not selectable
+    // or available in allProviders after 0.28.2.
+    private val retiredIds = setOf(
+        "osmfr", "osmde", "osmhot",
+        "maptiler-streets", "maptiler-satellite", "maptiler-hybrid"
+    )
+    fun isRetired(id: String): Boolean = id in retiredIds
     fun unkeyed(): List<MapProvider> = providers.filter { it.keyPref == null && it.id != "openandromaps-local" }
 
     fun tileTemplate(provider: MapProvider, key: String = "", session: String = ""): String {
@@ -89,16 +76,12 @@ object MapSources {
     }
 
     fun style(provider: MapProvider, key: String = "", session: String = ""): Style.Builder {
-        // MapTiler satellite imagery is a licensed raster tileset; other
-        // MapTiler modes are published, standard MapLibre vector styles.
         if (provider.id == "openfreemap-offline")
             return Style.Builder().fromUri(OfflineAreaPolicy.OFFLINE_STYLE)
-        if (mapTiler(provider) && provider.id != "maptiler-satellite")
-            return Style.Builder().fromUri(tileTemplate(provider, key))
         val tileSet = TileSet("2.2.0", tileTemplate(provider, key, session))
         tileSet.setMinZoom(0f)
         tileSet.setMaxZoom(when {
-            provider.id.startsWith("google-") || provider.id == "maptiler-satellite" -> 22f
+            provider.id.startsWith("google-") -> 22f
             provider.id == "yandex" -> 20f
             else -> 19f
         })
@@ -130,7 +113,7 @@ object MapSources {
     fun reachable(provider: MapProvider, lat: Double, lon: Double, key: String = ""): Boolean {
         if (provider.keyPref != null && key.isBlank()) return false
         if (provider.id == "openandromaps-local" || provider.id == "openfreemap-offline" ||
-            provider.id.startsWith("google-") || yandexWeb(provider) || mapTiler(provider))
+            provider.id.startsWith("google-") || yandexWeb(provider))
             return false // session, WebView or vector style, not directly testable as PNG
         val connection = (URL(sampleTileUrl(provider, lat, lon, key)).openConnection() as HttpURLConnection)
         connection.connectTimeout = 4500

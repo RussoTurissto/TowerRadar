@@ -629,7 +629,7 @@ class MainActivity : Activity(), SensorEventListener {
 
     /** Select a reachable raster tile host using a single low-zoom tile request. */
     private fun chooseBasemap() {
-        // A late background check must never replace a manual Yandex/MapTiler choice.
+        // A late background check must never replace a manual Yandex choice.
         if (choosingMap || getPreferences(Context.MODE_PRIVATE)
                 .getString("map_provider", "auto") != "auto") return
         choosingMap = true
@@ -690,10 +690,10 @@ class MainActivity : Activity(), SensorEventListener {
             else requestMapKey(provider)
             return
         }
-        // For a manually selected Yandex Tiles or MapTiler layer, draw its own
-        // style directly, including valid cached resources when connectivity fails.
+        // For a manually selected Yandex Tiles layer, use its own style directly,
+        // including valid cached resources when connectivity fails.
         // Connection probing is informational and cannot substitute another source.
-        if (provider.id == "yandex" || MapSources.mapTiler(provider)) {
+        if (provider.id == "yandex") {
             getPreferences(Context.MODE_PRIVATE).edit()
                 .putString("map_provider", provider.id).apply()
             applyBasemap(provider, key)
@@ -849,7 +849,6 @@ class MainActivity : Activity(), SensorEventListener {
             provider.id == "yandex" -> "developer.tech.yandex.ru (Tiles API)"
             MapSources.yandexWeb(provider) ->
                 "developer.tech.yandex.ru (JavaScript API · отдельный ключ)"
-            MapSources.mapTiler(provider) -> "cloud.maptiler.com (Free · некоммерческое)"
             provider.id.startsWith("google-") -> "console.cloud.google.com (Map Tiles API)"
             else -> "platform.2gis.ru (Raster Tiles API)"
         }
@@ -987,8 +986,8 @@ class MainActivity : Activity(), SensorEventListener {
                         // An inaccessible saved document must not blank the launch screen.
                         if (!useAsSelected && localMapTiles == null) {
                             getPreferences(Context.MODE_PRIVATE).edit()
-                                .putString("map_provider", "osmfr").apply()
-                            applyBasemap(MapSources.providers.first { it.id == "osmfr" })
+                                .putString("map_provider", "osm").apply()
+                            applyBasemap(MapSources.providers.first { it.id == "osm" })
                         }
                     }
                 }
@@ -1011,17 +1010,51 @@ class MainActivity : Activity(), SensorEventListener {
                 "Состояние: " + state
             )
             .setItems(arrayOf("Выбрать файл карты (.map)",
-                "Открыть выбранную карту")) { _, n ->
-                if (n == 0 || stored == null) pickLocalMapFile()
-                else openLocalMap(Uri.parse(stored), true)
+                "Открыть выбранную карту",
+                "Инструкция по скачиванию и установке")) { _, n ->
+                when (n) {
+                    0 -> pickLocalMapFile()
+                    1 -> if (stored == null) pickLocalMapFile()
+                         else openLocalMap(Uri.parse(stored), true)
+                    2 -> showLocalMapsforgeHelp()
+                }
             }
             .setNegativeButton("Назад") { _, _ -> showMapsMenu() }.show()
+    }
+
+    private fun showLocalMapsforgeHelp() {
+        KhakiDialogBuilder(this, palette)
+            .setTitle("Как установить OpenAndroMaps")
+            .setMessage(
+                "1. Подключите телефон к интернету и откройте официальный сайт OpenAndroMaps.\n\n" +
+                "2. В разделе Downloads выберите континент или регион, затем нужную страну.\n\n" +
+                "3. Найдите столбец Download V5 Map и нажмите «Karte/Map». " +
+                "Не нажимайте кнопки установки для Locus или OruxMaps.\n\n" +
+                "4. Дождитесь скачивания ZIP-архива. Для больших стран потребуется " +
+                "свободное место в памяти телефона.\n\n" +
+                "5. В системном приложении «Файлы» или архиваторе распакуйте ZIP. " +
+                "Откройте полученную папку и найдите файл с расширением .map. " +
+                "ZIP, .poi и .xml в TowerRadar выбирать не нужно.\n\n" +
+                "6. Вернитесь в TowerRadar → Настройки → Карты и офлайн → " +
+                "Офлайн-карты OpenAndroMaps.\n\n" +
+                "7. Нажмите «Выбрать файл карты (.map)», укажите распакованный файл " +
+                "и разрешите чтение. Карта подключится автоматически.\n\n" +
+                "8. После подключения карта работает без интернета. " +
+                "Для повторного открытия используйте «Открыть выбранную карту».\n\n" +
+                "Совместимые карты Mapsforge V5 работают с общей встроенной темой. " +
+                "Русские названия показываются, если есть в данных карты."
+            )
+            .setPositiveButton("Открыть сайт карт") { _, _ ->
+                openExternal("https://www.openandromaps.org/en/downloads")
+            }
+            .setNegativeButton("Назад") { _, _ -> showLocalMapsforgeMenu() }
+            .show()
     }
 
     private fun showMapsMenu() {
         KhakiDialogBuilder(this, palette).setTitle("Карты и офлайн")
             .setItems(arrayOf("Картографические подложки · в панели Подробнее",
-                "Подключения API · Яндекс / MapTiler / OpenCellID",
+                "Подключения API · Яндекс / высоты / OpenCellID",
                 "Офлайн-области и кеш · карты, рельеф, вышки",
                 "Кеш просмотренных карт · лимит и очистка",
                 "Офлайн-карты OpenAndroMaps · выбрать файл")) { _, n ->
@@ -1625,7 +1658,7 @@ class MainActivity : Activity(), SensorEventListener {
         val labels = arrayOf(
             "Яндекс Tiles API · обычная карта",
             "Яндекс JavaScript API · спутник / гибрид",
-            "MapTiler API · карты, спутник и высоты",
+            "MapTiler Elevation · резервные высоты",
             "OpenCellID · дополнительные сведения о сотах")
         val links = arrayOf(
             "https://developer.tech.yandex.ru/",
@@ -2432,8 +2465,8 @@ class MainActivity : Activity(), SensorEventListener {
         val connections = listOf(
             Triple("map_key_yandex", "Яндекс Карты", "Tiles API · схема"),
             Triple("map_key_yandex_js", "Яндекс JS · спутник / гибрид", "JavaScript API 2.1"),
-            Triple("map_key_maptiler", "MapTiler · карта / спутник / гибрид",
-                "Бесплатный тариф для личного некоммерческого использования"),
+            Triple("map_key_maptiler", "MapTiler Elevation · только высоты",
+                "Необязательный резервный сервис рельефа"),
             Triple("opencellid_key", "OpenCellID", "Данные о сотах")
         )
         connectionStatusViews.clear()
@@ -2459,8 +2492,7 @@ class MainActivity : Activity(), SensorEventListener {
                     "map_key_yandex" -> showYandexSetup()
                     "map_key_yandex_js" -> requestMapKey(
                         MapSources.providers.first { it.id == "yandex-js-hybrid" })
-                    "map_key_maptiler" -> requestMapKey(
-                        MapSources.providers.first { it.id == "maptiler-streets" })
+                    "map_key_maptiler" -> editMapTilerElevationKey()
                     else -> editCellKey()
                 }
             }
@@ -2486,6 +2518,43 @@ class MainActivity : Activity(), SensorEventListener {
         redrawConnectionStatuses()
         KhakiDialogBuilder(this, palette).setTitle("Подключения API")
             .setView(panel).setPositiveButton("Закрыть", null).show()
+    }
+
+    /** Keep the existing elevation API key configurable after removing map layers. */
+    private fun editMapTilerElevationKey() {
+        val pref = "map_key_maptiler"
+        val field = EditText(this).apply {
+            hint = "API-ключ MapTiler Elevation"
+            setSingleLine(true)
+            setText(getPreferences(Context.MODE_PRIVATE).getString(pref, ""))
+            setSelectAllOnFocus(true)
+        }
+        KhakiDialogBuilder(this, palette)
+            .setTitle("MapTiler Elevation · высоты")
+            .setMessage("Необязательный резервный сервис высот рельефа. " +
+                "Ключ используется только для высот, не для картографических подложек. " +
+                "Получить ключ: cloud.maptiler.com. " +
+                "Учитывайте тариф и ограничения поставщика.")
+            .setView(field)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val key = field.text.toString().trim()
+                if (key.isBlank()) {
+                    Toast.makeText(this, "Введите ключ или выберите «Удалить ключ»",
+                        Toast.LENGTH_LONG).show()
+                } else {
+                    getPreferences(Context.MODE_PRIVATE).edit().putString(pref, key).apply()
+                    apiChecks.remove(pref)
+                    verifyConnection(pref)
+                }
+            }
+            .setNeutralButton("Удалить ключ") { _, _ ->
+                getPreferences(Context.MODE_PRIVATE).edit().remove(pref).apply()
+                apiChecks.remove(pref)
+                checkingApi.remove(pref)
+                redrawConnectionStatuses()
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun showGoogleSetup() {
@@ -2535,11 +2604,16 @@ class MainActivity : Activity(), SensorEventListener {
         redrawConnectionStatuses()
         val where = activeUserPoint() ?: center ?: LatLng(55.75, 37.62)
         apiExecutor.execute {
-            val result = if (pref == "opencellid_key")
-                ApiConnections.checkOpenCell(key, where.latitude, where.longitude)
-            else {
-                val provider = MapSources.providers.first { it.keyPref == pref }
-                ApiConnections.checkMap(provider, where.latitude, where.longitude, key)
+            val result = when (pref) {
+                "opencellid_key" ->
+                    ApiConnections.checkOpenCell(key, where.latitude, where.longitude)
+                "map_key_maptiler" ->
+                    ApiConnections.checkMapTilerElevation(key, where.latitude, where.longitude)
+                else -> {
+                    val provider = MapSources.providers.firstOrNull { it.keyPref == pref }
+                    if (provider == null) ApiProbe(false, "Источник API недоступен")
+                    else ApiConnections.checkMap(provider, where.latitude, where.longitude, key)
+                }
             }
             runOnUiThread {
                 if (isDestroyed || isFinishing) return@runOnUiThread
@@ -3015,6 +3089,19 @@ class MainActivity : Activity(), SensorEventListener {
                     View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         }
         val prefs = getPreferences(Context.MODE_PRIVATE)
+        // Upgrade old selections of removed providers before creating the spinner
+        // or restoring the map. Keep local .map URI and API keys untouched.
+        val savedProvider = prefs.getString("map_provider", "auto") ?: "auto"
+        val savedAutomatic = prefs.getString("map_last_resolved", null)
+        if (MapSources.isRetired(savedProvider) ||
+            (savedAutomatic != null && MapSources.isRetired(savedAutomatic))) {
+            val migration = prefs.edit()
+            if (MapSources.isRetired(savedProvider))
+                migration.putString("map_provider", "osm")
+            if (savedAutomatic != null && MapSources.isRetired(savedAutomatic))
+                migration.putString("map_last_resolved", "osm")
+            migration.apply()
+        }
         displayMode = DisplayModePolicy.normalize(
             prefs.getString("display_mode", DisplayModePolicy.STANDARD))
         val storedLat = prefs.getString("manual_lat", null)?.toDoubleOrNull()
@@ -3116,13 +3203,12 @@ class MainActivity : Activity(), SensorEventListener {
             // Never temporarily replace an explicitly selected map with OSM.
             val savedId = prefs.getString("map_provider", "auto") ?: "auto"
             val preferredId = if (savedId == "auto")
-                prefs.getString("map_last_resolved", null) ?: "osmfr" else savedId
+                prefs.getString("map_last_resolved", null) ?: "osm" else savedId
             val saved = MapSources.providers.firstOrNull { it.id == preferredId }
             when {
                 saved == null -> { applyBasemap(MapSources.providers[0]); chooseBasemap() }
                 saved.keyPref == null -> applyBasemap(saved)
-                saved.id == "yandex" || MapSources.yandexWeb(saved) ||
-                    MapSources.mapTiler(saved) -> {
+                saved.id == "yandex" || MapSources.yandexWeb(saved) -> {
                     val key = prefs.getString(saved.keyPref, "").orEmpty()
                     if (key.isNotBlank()) {
                         applyBasemap(saved, key)
