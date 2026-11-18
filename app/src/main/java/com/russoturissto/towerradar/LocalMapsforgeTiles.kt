@@ -9,6 +9,7 @@ import org.maplibre.android.style.sources.TileSet
 import org.mapsforge.core.model.Tile
 import org.mapsforge.map.android.graphics.AndroidGraphicFactory
 import org.mapsforge.map.layer.cache.InMemoryTileCache
+import org.mapsforge.map.layer.labels.CachedMapDataStoreLabelStore
 import org.mapsforge.map.layer.renderer.DatabaseRenderer
 import org.mapsforge.map.layer.renderer.RendererJob
 import org.mapsforge.map.model.DisplayModel
@@ -61,13 +62,25 @@ internal class LocalMapsforgeTiles private constructor(
 
     private val closed = AtomicBoolean(false)
     private val renderLock = Any()
-    private val display = DisplayModel().apply { setFixedTileSize(TILE_SIZE) }
+    // MapLibre serves fixed 256-pixel raster tiles. Mapsforge's default Android
+    // display density would magnify fonts and symbols several times over.
+    private val display = DisplayModel().apply {
+        setFixedTileSize(TILE_SIZE)
+        setUserScaleFactor(MapsforgeRenderPolicy.userScaleForDevice(
+            DisplayModel.getDeviceScaleFactor()))
+    }
     private val tileCache = InMemoryTileCache(128)
     private val theme = RenderThemeFuture(
         AndroidGraphicFactory.INSTANCE, MapsforgeThemes.DEFAULT, display
     ).apply { run() }
+    // Read labels in a 3x3 tile neighborhood and resolve collisions
+    // deterministically. This renders both halves of labels crossing tile edges.
+    // The old null label store made every tile choose and clip labels independently.
+    private val labelStore = CachedMapDataStoreLabelStore(
+        mapFile, theme, 1f, display, AndroidGraphicFactory.INSTANCE
+    )
     private val renderer = DatabaseRenderer(
-        mapFile, AndroidGraphicFactory.INSTANCE, tileCache, null, true, false, null
+        mapFile, AndroidGraphicFactory.INSTANCE, tileCache, labelStore, true, false, null
     )
     private val server = ServerSocket(0, 16, InetAddress.getByName("127.0.0.1"))
     private val workers = Executors.newFixedThreadPool(2)
@@ -163,6 +176,7 @@ internal class LocalMapsforgeTiles private constructor(
         runCatching { server.close() }
         workers.shutdownNow()
         synchronized(renderLock) {
+            runCatching { labelStore.clear() }
             runCatching { tileCache.destroy() }
             runCatching { mapFile.close() }
             runCatching { input.close() }
