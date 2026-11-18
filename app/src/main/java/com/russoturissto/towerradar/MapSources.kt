@@ -20,11 +20,11 @@ data class MapProvider(
 
 object MapSources {
     val allProviders = listOf(
-        MapProvider("openandromaps-local", "OpenAndroMaps · локальная",
-            "", "© OpenAndroMaps · © OpenStreetMap contributors"),
         MapProvider("openfreemap-offline", "OpenFreeMap · офлайн", 
             OfflineAreaPolicy.OFFLINE_STYLE,
             "© OpenFreeMap · © OpenStreetMap contributors"),
+        MapProvider("openandromaps-local", "OpenAndroMaps · локальная",
+            "", "© OpenAndroMaps · © OpenStreetMap contributors"),
         MapProvider("osmfr", "OSM France · местные названия",
             "https://a.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png",
             "© OpenStreetMap contributors · OpenStreetMap France"),
